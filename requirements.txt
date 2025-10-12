@@ -2,8 +2,8 @@ pip>=25.2
 setuptools>=69.0
 wheel>=0.43
 numpy==1.26.4
-streamlit==1.36.0
-pandas==2.1.0
+streamlit==1.38.0
+pandas==2.2.2
 qrcode[pil]==7.4.2
 Pillow==10.4.0
 openpyxl==3.1.5
