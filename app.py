@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -36,10 +35,10 @@ def generate_qr(url):
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
 
 st.title("🗳️ SmartVoteApp 投票系統")
-
-query_params = st.query_params
-is_admin = query_params.get("admin", ["false"])[0].lower() == "true"
-戶號參數 = query_params.get("unit", [None])[0]
+try:
+    query_params = st.query_params.to_dict()
+except Exception:
+    query_params = st.experimental_get_query_params()
 
 # ==============================
 # 管理員模式
@@ -62,7 +61,7 @@ if is_admin:
             with zipfile.ZipFile(zip_buf, "w") as zipf:
                 for _, row in units_df.iterrows():
                     params = {"unit": row["戶號"]}
-                    url = f"https://acidcocco.onrender.com?{urlencode(params)}"
+                    url = f"https://smartvoteapp.onrender.com?{urlencode(params)}"
                     qr_buf = generate_qr(url)
                     zipf.writestr(f"{row['戶號']}.png", qr_buf.getvalue())
             zip_buf.seek(0)
