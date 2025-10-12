@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -6,7 +7,6 @@ import os
 import zipfile
 from datetime import datetime
 from urllib.parse import urlencode
-from PIL import Image, ImageDraw, ImageFont
 
 # ==============================
 # 初始化 Session State
@@ -19,34 +19,14 @@ if "votes" not in st.session_state:
 # ==============================
 def save_votes(df):
     df.to_csv("votes.csv", index=False, encoding="utf-8-sig")
+    # 備份檔案
     backup_name = f"votes_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(backup_name, index=False, encoding="utf-8-sig")
 
-def generate_qr(url, text=None):
-    """產生含戶號文字的 QR Code"""
-    qr = qrcode.QRCode(box_size=10, border=2)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-    if text:
-        draw = ImageDraw.Draw(img)
-        font_size = 20
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-
-        text_width, text_height = draw.textsize(text, font=font)
-        # 在 QR Code 上方留空白區域放戶號
-        new_img = Image.new("RGB", (img.width, img.height + text_height + 10), "white")
-        new_img.paste(img, (0, text_height + 10))
-        draw = ImageDraw.Draw(new_img)
-        draw.text(((img.width - text_width) // 2, 0), text, fill="black", font=font)
-        img = new_img
-
+def generate_qr(url):
+    qr_img = qrcode.make(url)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    qr_img.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -54,6 +34,7 @@ def generate_qr(url, text=None):
 # 主畫面邏輯
 # ==============================
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
+
 st.title("🗳️ SmartVoteApp 投票系統")
 
 query_params = st.query_params
@@ -75,28 +56,23 @@ if is_admin:
 
         st.success("✅ 成功讀取議題與戶號清單")
 
-        # 產生 QR Code
+        # 顯示 QR Code 生成按鈕
         if st.button("🧾 產生戶號專屬 QR Code"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zipf:
                 for _, row in units_df.iterrows():
                     params = {"unit": row["戶號"]}
                     url = f"https://acidcocco.onrender.com?{urlencode(params)}"
-                    qr_buf = generate_qr(url, text=row["戶號"])  # 加上戶號文字
+                    qr_buf = generate_qr(url)
                     zipf.writestr(f"{row['戶號']}.png", qr_buf.getvalue())
             zip_buf.seek(0)
-            st.download_button(
-                "⬇️ 下載 QR Code 壓縮檔",
-                data=zip_buf,
-                file_name="QRCode_AllUnits.zip",
-                mime="application/zip"
-            )
+            st.download_button("⬇️ 下載 QR Code 壓縮檔", data=zip_buf, file_name="QRCode_AllUnits.zip", mime="application/zip")
 
         # 投票統計
         if os.path.exists("votes.csv"):
             votes_df = pd.read_csv("votes.csv")
             merged_df = votes_df.merge(units_df, on="戶號", how="left")
-
+            
             result_list = []
             for issue in merged_df["議題"].unique():
                 issue_data = merged_df[merged_df["議題"] == issue]
