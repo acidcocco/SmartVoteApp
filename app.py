@@ -35,10 +35,22 @@ def generate_qr(url):
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
 
 st.title("🗳️ SmartVoteApp 投票系統")
+
 try:
     query_params = st.query_params.to_dict()
 except Exception:
     query_params = st.experimental_get_query_params()
+
+# ==============================
+# 判斷模式參數
+# ==============================
+is_admin = False
+戶號參數 = None
+
+if "admin" in query_params and query_params["admin"] == "true":
+    is_admin = True
+elif "unit" in query_params:
+    戶號參數 = query_params["unit"]
 
 # ==============================
 # 管理員模式
@@ -125,5 +137,8 @@ elif 戶號參數:
     else:
         st.warning("⚠️ 尚未上傳議題清單，請聯絡管理員。")
 
+# ==============================
+# 預設首頁提示
+# ==============================
 else:
     st.info("請透過 QR Code 進入投票頁面，或於網址後加上 '?admin=true' 進入管理模式。")
