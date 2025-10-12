@@ -62,6 +62,12 @@ if is_admin:
     uploaded_units = st.file_uploader("🏠 上傳戶號清單 Excel（含區分比例）", type=["xlsx"])
 
     if uploaded_issues and uploaded_units:
+        with open("議題清單.xlsx", "wb") as f:
+            f.write(uploaded_issues.getvalue())
+
+        with open("戶號清單.xlsx", "wb") as f:
+            f.write(uploaded_units.getvalue())
+            
         issues_df = pd.read_excel(uploaded_issues)
         units_df = pd.read_excel(uploaded_units)
 
