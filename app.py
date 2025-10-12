@@ -4,6 +4,7 @@ import pandas as pd
 import qrcode
 import io
 import os
+import zipfile
 from datetime import datetime
 from urllib.parse import urlencode
 
