@@ -4,21 +4,24 @@ import qrcode
 import io
 import os
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
+from streamlit_autorefresh import st_autorefresh
+import matplotlib.pyplot as plt
 
 # ==============================
 # 初始化 Session State
 # ==============================
 if "votes" not in st.session_state:
     st.session_state.votes = pd.DataFrame(columns=["戶號", "議題", "選項", "區分比例", "時間"])
+if "deadline" not in st.session_state:
+    st.session_state.deadline = None
 
 # ==============================
 # 功能函式
 # ==============================
 def save_votes(df):
     df.to_csv("votes.csv", index=False, encoding="utf-8-sig")
-    # 備份檔案
     backup_name = f"votes_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(backup_name, index=False, encoding="utf-8-sig")
 
@@ -30,10 +33,9 @@ def generate_qr(url):
     return buf
 
 # ==============================
-# 主畫面邏輯
+# Streamlit 頁面設定
 # ==============================
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
-
 st.title("🗳️ SmartVoteApp 投票系統")
 
 try:
@@ -58,11 +60,6 @@ elif "unit" in query_params:
 if is_admin:
     st.header("👨‍💼 管理員模式")
 
-    # 🔄 自動更新功能（每 5 秒刷新一次）
-    from streamlit_autorefresh import st_autorefresh
-    st.info("此頁面每 5 秒自動更新一次以顯示最新投票結果。")
-    st_autorefresh(interval=5000, key="refresh_admin")
-
     uploaded_issues = st.file_uploader("📘 上傳議題清單 Excel", type=["xlsx"])
     uploaded_units = st.file_uploader("🏠 上傳戶號清單 Excel（含區分比例）", type=["xlsx"])
 
@@ -78,7 +75,7 @@ if is_admin:
 
         st.success("✅ 成功讀取議題與戶號清單")
 
-        # 顯示 QR Code 生成按鈕
+        # 產生 QR Code
         if st.button("🧾 產生戶號專屬 QR Code"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zipf:
@@ -90,11 +87,45 @@ if is_admin:
             zip_buf.seek(0)
             st.download_button("⬇️ 下載 QR Code 壓縮檔", data=zip_buf, file_name="QRCode_AllUnits.zip", mime="application/zip")
 
-        # 投票統計
+        # 📅 投票截止時間設定
+        st.divider()
+        st.subheader("📅 投票截止時間設定")
+        col1, col2 = st.columns(2)
+        with col1:
+            deadline_date = st.date_input("截止日期", value=datetime.now().date())
+        with col2:
+            deadline_time = st.time_input("截止時間", value=(datetime.now() + timedelta(hours=1)).time())
+
+        deadline = datetime.combine(deadline_date, deadline_time)
+        st.session_state.deadline = deadline
+
+        now = datetime.now()
+        st.write(f"🕒 現在時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
+        if now < deadline:
+            remaining = deadline - now
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes = remainder // 60
+            st.success(f"⏳ 距離截止還有 {remaining.days} 天 {hours} 小時 {minutes} 分鐘")
+        else:
+            st.warning("⚠️ 投票已截止。系統將顯示最終結果（不再自動刷新）")
+
+        # ✅ 即時更新開關
+        st.divider()
+        enable_refresh = st.checkbox("✅ 即時更新投票結果（每 5 秒刷新一次）", value=True)
+
+        # 若未超過截止時間且開啟刷新 → 啟用自動更新
+        if enable_refresh and now < deadline:
+            st_autorefresh(interval=5000, key="auto_refresh")
+        elif now >= deadline:
+            st.info("📢 投票截止，已自動停止刷新。")
+
+        # ==============================
+        # 投票統計結果顯示
+        # ==============================
         if os.path.exists("votes.csv"):
             votes_df = pd.read_csv("votes.csv")
             merged_df = votes_df.merge(units_df, on="戶號", how="left")
-            
+
             result_list = []
             for issue in merged_df["議題"].unique():
                 issue_data = merged_df[merged_df["議題"] == issue]
@@ -116,14 +147,33 @@ if is_admin:
                 })
 
             stat_df = pd.DataFrame(result_list)
-            st.subheader("📊 投票統計結果（即時）")
+
+            # 📢 截止後自動顯示公告
+            if now >= deadline:
+                st.markdown("""
+                <div style="background-color:#fce4ec;padding:15px;border-radius:10px;margin-bottom:10px">
+                <h4>📢 投票已截止！</h4>
+                <p>以下為最終投票結果。</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.subheader("📊 投票統計結果")
             st.dataframe(stat_df, use_container_width=True)
 
+            # 📈 長條圖
             st.subheader("📈 區分比例長條圖（同意 vs 不同意）")
             chart_df = stat_df.set_index("議題")[["同意比例", "不同意比例"]]
-            st.bar_chart(chart_df, use_container_width=True)
+            fig, ax = plt.subplots(figsize=(8, 4))
+            chart_df.plot(kind="bar", ax=ax, color=["green", "red"])
+            ax.set_ylabel("區分比例")
+            ax.set_xlabel("議題")
+            ax.set_title("各議題投票比例圖")
+            ax.legend(["同意", "不同意"])
+            st.pyplot(fig)
+
+            st.caption(f"📅 最後更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         else:
-            st.info("尚無投票資料。")
+            st.warning("⚠️ 尚無投票資料。")
 
 # ==============================
 # 投票模式（一般住戶）
@@ -131,23 +181,19 @@ if is_admin:
 elif 戶號參數:
     st.header(f"🏠 戶號 {戶號參數} 投票頁面")
 
-    if not os.path.exists("戶號清單.xlsx"):
-        st.warning("⚠️ 尚未上傳戶號清單，請聯絡管理員。")
-    elif not os.path.exists("議題清單.xlsx"):
-        st.warning("⚠️ 尚未上傳議題清單，請聯絡管理員。")
-    else:
+    if os.path.exists("議題清單.xlsx") and os.path.exists("戶號清單.xlsx"):
         issues_df = pd.read_excel("議題清單.xlsx")
         units_df = pd.read_excel("戶號清單.xlsx")
 
-        # 🔹 檢查是否已投票
+        # 檢查是否已投票
         if os.path.exists("votes.csv"):
-            votes_df = pd.read_csv("votes.csv")
-            if 戶號參數 in votes_df["戶號"].values:
+            existing_votes = pd.read_csv("votes.csv")
+            if 戶號參數 in existing_votes["戶號"].values:
                 st.success("✅ 您已完成投票，感謝您的參與！")
                 st.stop()
 
-        # 🔹 未投過 → 顯示投票表單
         st.write("請勾選以下議題的意見：")
+
         vote_records = []
         for _, row in issues_df.iterrows():
             issue = row["議題名稱"]
@@ -155,16 +201,19 @@ elif 戶號參數:
             vote_records.append((戶號參數, issue, option))
 
         if st.button("📤 送出投票"):
-            df = pd.DataFrame(vote_records, columns=["戶號", "議題", "選項"])
-            # 讀取區分比例
-            ratio = units_df.loc[units_df["戶號"] == 戶號參數, "區分比例"].values
-            ratio_value = ratio[0] if len(ratio) > 0 else 0
-            df["區分比例"] = ratio_value
-            df["時間"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.votes = pd.concat([st.session_state.votes, df], ignore_index=True)
-            save_votes(st.session_state.votes)
-            st.success("✅ 投票完成，感謝您的參與！請勿重複投票。")
-            st.experimental_rerun()
+            unit_info = units_df[units_df["戶號"] == 戶號參數]
+            if unit_info.empty:
+                st.error("查無此戶號，請確認 QR Code 是否正確。")
+            else:
+                ratio = float(unit_info["區分比例"].iloc[0])
+                df = pd.DataFrame(vote_records, columns=["戶號", "議題", "選項"])
+                df["區分比例"] = ratio
+                df["時間"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.session_state.votes = pd.concat([st.session_state.votes, df], ignore_index=True)
+                save_votes(st.session_state.votes)
+                st.success("✅ 投票完成，感謝您的參與！")
+    else:
+        st.warning("⚠️ 尚未上傳議題或戶號清單，請聯絡管理員。")
 
 # ==============================
 # 預設首頁提示
