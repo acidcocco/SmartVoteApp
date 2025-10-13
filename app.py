@@ -59,13 +59,9 @@ if is_admin:
     st.header("👨‍💼 管理員模式")
 
     # 🔄 自動更新功能（每 5 秒刷新一次）
+    from streamlit_autorefresh import st_autorefresh
     st.info("此頁面每 5 秒自動更新一次以顯示最新投票結果。")
-    st_autorefresh = st.experimental_rerun if "st_autorefresh" not in globals() else None
-    try:
-        st_autorefresh = st_autorefresh or st_autorefresh(interval=5000, key="refresh_admin")
-    except Exception:
-        from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=5000, key="refresh_admin")
+    st_autorefresh(interval=5000, key="refresh_admin")
 
     uploaded_issues = st.file_uploader("📘 上傳議題清單 Excel", type=["xlsx"])
     uploaded_units = st.file_uploader("🏠 上傳戶號清單 Excel（含區分比例）", type=["xlsx"])
