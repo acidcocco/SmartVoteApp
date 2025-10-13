@@ -1,4 +1,4 @@
-# app.py - SmartVoteApp 最終穩定修正版（支援 Plotly、SQLite、設定歷史、匯出）
+# app.py - SmartVoteApp 最終穩定修正版 v2（移除歷史紀錄 + Excel防呆）
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -13,7 +13,7 @@ import pytz
 import plotly.express as px
 
 # ==============================
-# 基本設定（請視需要修改 BASE_URL）
+# 基本設定
 # ==============================
 BASE_URL = os.environ.get("BASE_URL", "https://acidcocco.onrender.com")
 DATA_DIR = "data"
@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 TZ = pytz.timezone("Asia/Taipei")
 
 # ==============================
-# 初始化資料庫（votes, settings）
+# 初始化資料庫
 # ==============================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -81,20 +81,18 @@ def update_setting_active(new_active, note=None):
 def get_latest_setting():
     conn = get_conn()
     c = conn.cursor()
-    row = c.execute("SELECT end_time, is_active, created_at FROM settings ORDER BY id DESC LIMIT 1").fetchone()
+    row = c.execute("SELECT end_time, is_active FROM settings ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
     if row:
-        end_time_iso, is_active, created = row
+        end_time_iso, is_active = row
         if end_time_iso:
             try:
                 dt = datetime.fromisoformat(end_time_iso)
             except Exception:
-                dt = datetime.fromisoformat(end_time_iso)
+                return None, 1
             if dt.tzinfo is None:
                 dt = TZ.localize(dt)
-        else:
-            dt = None
-        return dt, int(is_active)
+            return dt, int(is_active)
     return None, 1
 
 def save_votes_sql(records):
@@ -126,7 +124,7 @@ def has_voted(unit):
     return count > 0
 
 # ==============================
-# 共用工具：QR 產生
+# 共用工具
 # ==============================
 def generate_qr_bytes(url):
     img = qrcode.make(url)
@@ -135,11 +133,19 @@ def generate_qr_bytes(url):
     buf.seek(0)
     return buf
 
+def safe_read_excel(path):
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return pd.read_excel(path)
+    except Exception as e:
+        st.error(f"❌ 無法讀取檔案 {os.path.basename(path)}：{e}")
+    return None
+
 # ==============================
 # Streamlit UI
 # ==============================
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
-st.title("🗳️ SmartVoteApp 投票系統（最終穩定版）")
+st.title("🗳️ SmartVoteApp 投票系統（穩定版 v2）")
 
 try:
     qp = st.query_params.to_dict()
@@ -154,231 +160,154 @@ unit = qp.get("unit")
 # ==============================
 if is_admin:
     st.header("👨‍💼 管理員後台")
+
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         uploaded_issues = st.file_uploader("📘 上傳議題清單（Excel，欄位：議題名稱）", type=["xlsx"])
     with col_u2:
         uploaded_units = st.file_uploader("🏠 上傳戶號清單（Excel，欄位：戶號、區分比例）", type=["xlsx"])
 
-    issues_df = None
-    units_df = None
     if uploaded_issues:
-        issues_path = os.path.join(DATA_DIR, "議題清單.xlsx")
-        with open(issues_path, "wb") as f:
+        path = os.path.join(DATA_DIR, "議題清單.xlsx")
+        with open(path, "wb") as f:
             f.write(uploaded_issues.getvalue())
-        issues_df = pd.read_excel(issues_path)
-        st.success("已儲存議題清單（data/議題清單.xlsx）")
-    if uploaded_units:
-        units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
-        with open(units_path, "wb") as f:
-            f.write(uploaded_units.getvalue())
-        units_df = pd.read_excel(units_path)
-        st.success("已儲存戶號清單（data/戶號清單.xlsx）")
+        st.success("✅ 已儲存議題清單")
 
-    if units_df is not None:
-        if st.button("🧾 產生戶號專屬 QR Code（ZIP）"):
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w") as zf:
-                for _, r in units_df.iterrows():
-                    params = {"unit": r["戶號"]}
-                    url = f"{BASE_URL}?{urlencode(params)}"
-                    qr_b = generate_qr_bytes(url)
-                    zf.writestr(f"{r['戶號']}.png", qr_b.getvalue())
-            zip_buf.seek(0)
-            st.download_button("⬇️ 下載 QR Code ZIP", zip_buf, file_name="QRCode_AllUnits.zip", mime="application/zip")
+    if uploaded_units:
+        path = os.path.join(DATA_DIR, "戶號清單.xlsx")
+        with open(path, "wb") as f:
+            f.write(uploaded_units.getvalue())
+        st.success("✅ 已儲存戶號清單")
+
+    units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
+    units_df = safe_read_excel(units_path)
+
+    if units_df is not None and st.button("🧾 產生戶號專屬 QR Code（ZIP）"):
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            for _, r in units_df.iterrows():
+                params = {"unit": r["戶號"]}
+                url = f"{BASE_URL}?{urlencode(params)}"
+                qr_b = generate_qr_bytes(url)
+                zf.writestr(f"{r['戶號']}.png", qr_b.getvalue())
+        zip_buf.seek(0)
+        st.download_button("⬇️ 下載 QR Code ZIP", zip_buf, file_name="QRCode_AllUnits.zip", mime="application/zip")
 
     st.markdown("---")
     now = datetime.now(TZ)
-    st.info(f"🕒 現在時間（台北）：{now.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.info(f"🕒 現在時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    st.subheader("📅 設定截止時間（從現在起）")
-    minute_options = list(range(5, 181, 5))
-    selected_min = st.selectbox("選擇從現在起多少分鐘後截止（分鐘）", minute_options, index=2)
-    computed_deadline = now + timedelta(minutes=int(selected_min))
-    st.caption(f"計算後截止時間（台北）：{computed_deadline.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.subheader("📅 設定截止時間")
+    minute = st.selectbox("選擇從現在起多少分鐘後截止", list(range(5, 181, 5)), index=2)
+    computed_deadline = now + timedelta(minutes=int(minute))
+    st.caption(f"截止時間：{computed_deadline.strftime('%Y-%m-%d %H:%M:%S')}")
 
     if st.button("✅ 設定截止時間並啟用投票"):
-        add_setting(computed_deadline, is_active=1)
-        st.success("已新增設定並啟用投票（設定會保留為歷史紀錄）。")
+        add_setting(computed_deadline, 1)
+        st.success("已啟用投票")
 
     col_stop, col_start = st.columns(2)
     with col_stop:
-        if st.button("🛑 停止投票（管理員）"):
+        if st.button("🛑 停止投票"):
             update_setting_active(0)
-            st.warning("管理員已停止投票（新增紀錄）。")
+            st.warning("投票已停止")
     with col_start:
-        if st.button("▶️ 啟用投票（保留最新截止時間）"):
-            latest_end, latest_active = get_latest_setting()
-            if latest_end is None:
-                st.error("尚未設定截止時間，請先設定截止時間。")
-            else:
-                update_setting_active(1)
-                st.success("已啟用投票（新增紀錄）。")
+        if st.button("▶️ 重新啟用投票"):
+            update_setting_active(1)
+            st.success("投票已重新啟用")
 
-    st.markdown("---")
     latest_end, latest_active = get_latest_setting()
     if latest_end:
-        if latest_end.tzinfo is None:
-            latest_end = TZ.localize(latest_end)
-        latest_end_local = latest_end.astimezone(TZ)
-        remain = latest_end_local - datetime.now(TZ)
+        remain = latest_end - datetime.now(TZ)
         if latest_active == 0:
-            st.warning(f"目前狀態：已停止。截止：{latest_end_local.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.warning(f"目前狀態：停止中（截止：{latest_end.strftime('%Y-%m-%d %H:%M:%S')}）")
         elif remain.total_seconds() > 0:
-            st.success(f"投票開放中，距離截止還有 {remain.seconds//3600} 小時 {(remain.seconds%3600)//60} 分鐘")
+            st.success(f"開放中，剩餘 {remain.seconds//60} 分鐘")
         else:
-            st.warning("目前設定截止時間已過。")
+            st.warning("已超過截止時間")
 
-    refresh_toggle = st.checkbox("✅ 即時更新投票結果（每 5 秒）", value=True)
-    if refresh_toggle:
-        latest_end2, latest_active2 = get_latest_setting()
-        if latest_end2 and latest_active2 == 1:
-            if latest_end2.tzinfo is None:
-                latest_end2 = TZ.localize(latest_end2)
-            if datetime.now(TZ) < latest_end2:
-                st_autorefresh(interval=5000, key="auto_refresh")
+    if st.checkbox("✅ 即時更新統計（每5秒）", value=True):
+        st_autorefresh(interval=5000, key="auto_refresh")
 
     st.markdown("---")
-    st.subheader("📊 投票統計與圖表")
+    st.subheader("📊 投票統計")
 
     votes_df = fetch_votes_df()
-    units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
-    if os.path.exists(units_path) and not votes_df.empty:
-        units_df = pd.read_excel(units_path)
+    issues_df = safe_read_excel(os.path.join(DATA_DIR, "議題清單.xlsx"))
+    if units_df is not None and issues_df is not None and not votes_df.empty:
         merged = votes_df.merge(units_df, on="戶號", how="left")
-        ratio_col = next((c for c in merged.columns if "比例" in c or "比率" in c or "持分" in c), None)
+        ratio_col = next((c for c in merged.columns if "比例" in c), None)
 
-        results = []
+        result = []
         for issue in merged["議題"].unique():
             d = merged[merged["議題"] == issue]
             agree = d[d["選項"] == "同意"]
             disagree = d[d["選項"] == "不同意"]
-            total_units = units_df["戶號"].nunique()
-            unvote = total_units - d["戶號"].nunique()
-            if ratio_col:
-                agree_ratio = agree[ratio_col].sum()
-                disagree_ratio = disagree[ratio_col].sum()
-            else:
-                agree_ratio = len(agree)
-                disagree_ratio = len(disagree)
-            results.append({
+            total = units_df["戶號"].nunique()
+            unvote = total - d["戶號"].nunique()
+            a_ratio = agree[ratio_col].sum() if ratio_col else len(agree)
+            d_ratio = disagree[ratio_col].sum() if ratio_col else len(disagree)
+            result.append({
                 "議題": issue,
-                "同意人數": int(len(agree)),
-                "不同意人數": int(len(disagree)),
-                "未投票戶數": int(unvote),
-                "同意比例": round(float(agree_ratio), 2),
-                "不同意比例": round(float(disagree_ratio), 2)
+                "同意人數": len(agree),
+                "不同意人數": len(disagree),
+                "未投票戶數": unvote,
+                "同意比例": round(float(a_ratio), 2),
+                "不同意比例": round(float(d_ratio), 2)
             })
 
-        stat_df = pd.DataFrame(results)
+        stat_df = pd.DataFrame(result)
         st.dataframe(stat_df, use_container_width=True)
 
-        st.markdown("### 圓餅圖（每題）")
         for _, r in stat_df.iterrows():
-            fig_pie = px.pie(values=[r["同意人數"], r["不同意人數"]],
-                             names=["同意", "不同意"],
-                             title=r["議題"],
-                             hole=0.35)
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        st.markdown("### 各題比例比較（長條圖）")
-        bar_fig = px.bar(stat_df, x="議題", y=["同意比例", "不同意比例"],
-                         barmode="group", title="各議題投票比例")
-        st.plotly_chart(bar_fig, use_container_width=True)
-
-        csv_bytes = stat_df.to_csv(index=False).encode("utf-8-sig")
-        excel_buf = io.BytesIO()
-        with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
-            stat_df.to_excel(writer, index=False, sheet_name="投票結果")
-            votes_df.to_excel(writer, index=False, sheet_name="raw_votes")
-        excel_buf.seek(0)
-
-        st.download_button("📄 匯出 CSV（投票結果）", data=csv_bytes, file_name="投票結果.csv", mime="text/csv")
-        st.download_button("📘 匯出 Excel（投票結果 + raw）", data=excel_buf, file_name="投票結果.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            fig = px.pie(values=[r["同意人數"], r["不同意人數"]],
+                         names=["同意", "不同意"], title=r["議題"], hole=0.35)
+            st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("尚無投票資料或未上傳戶號清單。")
-
-    st.markdown("---")
-    st.subheader("🕘 設定歷史（最近 10 筆）")
-    conn = get_conn()
-    hist_df = pd.read_sql("SELECT id, end_time, is_active, note, created_at FROM settings ORDER BY id DESC LIMIT 10", conn)
-    conn.close()
-    if not hist_df.empty:
-        def conv(t):
-            if pd.isna(t):
-                return None
-            try:
-                dt = datetime.fromisoformat(t)
-            except Exception:
-                return t
-            if dt.tzinfo is None:
-                dt = TZ.localize(dt)
-            return dt.astimezone(TZ).strftime("%Y-%m-%d %H:%M:%S")
-        hist_df["end_time_local"] = hist_df["end_time"].apply(conv)
-        st.dataframe(hist_df[["id", "end_time_local", "is_active", "note", "created_at"]], use_container_width=True)
-    else:
-        st.info("尚無設定紀錄。")
+        st.info("尚無投票資料或 Excel 未上傳")
 
 # ==============================
 # 住戶投票頁
 # ==============================
 elif unit:
-    st.header(f"🏠 戶號 {unit} 投票頁面")
+    st.header(f"🏠 戶號 {unit} 投票頁")
 
-    issues_path = os.path.join(DATA_DIR, "議題清單.xlsx")
-    units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
-    if not os.path.exists(issues_path) or not os.path.exists(units_path):
-        st.warning("尚未由管理員上傳議題或戶號清單（請聯絡管理員）。")
+    issues = safe_read_excel(os.path.join(DATA_DIR, "議題清單.xlsx"))
+    units = safe_read_excel(os.path.join(DATA_DIR, "戶號清單.xlsx"))
+    if issues is None or units is None:
+        st.warning("資料未上傳或損壞，請聯絡管理員")
         st.stop()
 
-    issues_df = pd.read_excel(issues_path)
-    units_df = pd.read_excel(units_path)
-
-    latest_end, latest_active = get_latest_setting()
-    if latest_end is None:
-        st.warning("尚未設定截止時間，請聯絡管理員。")
-        st.stop()
-
-    if latest_end.tzinfo is None:
-        latest_end = TZ.localize(latest_end)
-    latest_end_local = latest_end.astimezone(TZ)
-    now_local = datetime.now(TZ)
-
-    if latest_active == 0 or now_local >= latest_end_local:
-        st.warning("投票已截止或被管理員停止，感謝您的參與。")
+    end, active = get_latest_setting()
+    if not end or active == 0 or datetime.now(TZ) >= end:
+        st.warning("投票已截止或被停止")
         st.stop()
 
     if has_voted(unit):
-        st.success("您已完成投票，感謝您的參與。")
+        st.success("您已完成投票，感謝參與")
         st.stop()
 
-    st.info(f"投票截止時間（台北）：{latest_end_local.strftime('%Y-%m-%d %H:%M:%S')}")
-    st.write("請為下列議題選擇意見（同一戶一次送出）：")
-
+    st.info(f"截止時間：{end.strftime('%Y-%m-%d %H:%M:%S')}")
     choices = {}
-    for idx, row in issues_df.iterrows():
+    for idx, row in issues.iterrows():
         issue = row.get("議題名稱") if "議題名稱" in row else row.iloc[0]
-        choices[f"q_{idx}"] = st.radio(issue, ["同意", "不同意"], horizontal=True, key=f"q_{idx}")
+        choices[idx] = st.radio(issue, ["同意", "不同意"], horizontal=True)
 
     if st.button("📤 送出投票"):
-        user_row = units_df[units_df["戶號"] == unit]
-        if user_row.empty:
-            st.error("查無此戶號，請確認 QR Code 或聯絡管理員。")
+        user = units[units["戶號"] == unit]
+        if user.empty:
+            st.error("查無此戶號")
         else:
-            ratio = float(user_row.iloc[0, 1]) if user_row.shape[1] >= 2 else 1.0
-            iso_time = datetime.now(TZ).isoformat()
-            recs = []
-            for idx, row in issues_df.iterrows():
-                issue = row.get("議題名稱") if "議題名稱" in row else row.iloc[0]
-                choice = choices.get(f"q_{idx}")
-                recs.append((unit, issue, choice, ratio, iso_time))
+            ratio = float(user.iloc[0, 1]) if user.shape[1] > 1 else 1.0
+            now_iso = datetime.now(TZ).isoformat()
+            recs = [(unit, row.get("議題名稱") if "議題名稱" in row else row.iloc[0],
+                     choices[idx], ratio, now_iso) for idx, row in issues.iterrows()]
             save_votes_sql(recs)
-            st.success("✅ 投票已送出，謝謝您的參與！")
+            st.success("✅ 投票完成！")
             st.rerun()
 
 # ==============================
 # 首頁
 # ==============================
 else:
-    st.info("請透過 QR Code 進入投票頁面（網址包含 ?unit=xxx），或於網址後加上 '?admin=true' 進入管理後台。")
+    st.info("請使用 QR Code 進入投票頁（?unit=xxx）或 ?admin=true 進入後台。")
