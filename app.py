@@ -58,6 +58,15 @@ elif "unit" in query_params:
 if is_admin:
     st.header("👨‍💼 管理員模式")
 
+    # 🔄 自動更新功能（每 5 秒刷新一次）
+    st.info("此頁面每 5 秒自動更新一次以顯示最新投票結果。")
+    st_autorefresh = st.experimental_rerun if "st_autorefresh" not in globals() else None
+    try:
+        st_autorefresh = st_autorefresh or st_autorefresh(interval=5000, key="refresh_admin")
+    except Exception:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=5000, key="refresh_admin")
+
     uploaded_issues = st.file_uploader("📘 上傳議題清單 Excel", type=["xlsx"])
     uploaded_units = st.file_uploader("🏠 上傳戶號清單 Excel（含區分比例）", type=["xlsx"])
 
@@ -111,12 +120,14 @@ if is_admin:
                 })
 
             stat_df = pd.DataFrame(result_list)
-            st.subheader("📊 投票統計結果")
-            st.dataframe(stat_df)
+            st.subheader("📊 投票統計結果（即時）")
+            st.dataframe(stat_df, use_container_width=True)
 
             st.subheader("📈 區分比例長條圖（同意 vs 不同意）")
             chart_df = stat_df.set_index("議題")[["同意比例", "不同意比例"]]
-            st.bar_chart(chart_df)
+            st.bar_chart(chart_df, use_container_width=True)
+        else:
+            st.info("尚無投票資料。")
 
 # ==============================
 # 投票模式（一般住戶）
@@ -124,10 +135,23 @@ if is_admin:
 elif 戶號參數:
     st.header(f"🏠 戶號 {戶號參數} 投票頁面")
 
-    if os.path.exists("議題清單.xlsx"):
+    if not os.path.exists("戶號清單.xlsx"):
+        st.warning("⚠️ 尚未上傳戶號清單，請聯絡管理員。")
+    elif not os.path.exists("議題清單.xlsx"):
+        st.warning("⚠️ 尚未上傳議題清單，請聯絡管理員。")
+    else:
         issues_df = pd.read_excel("議題清單.xlsx")
-        st.write("請勾選以下議題的意見：")
+        units_df = pd.read_excel("戶號清單.xlsx")
 
+        # 🔹 檢查是否已投票
+        if os.path.exists("votes.csv"):
+            votes_df = pd.read_csv("votes.csv")
+            if 戶號參數 in votes_df["戶號"].values:
+                st.success("✅ 您已完成投票，感謝您的參與！")
+                st.stop()
+
+        # 🔹 未投過 → 顯示投票表單
+        st.write("請勾選以下議題的意見：")
         vote_records = []
         for _, row in issues_df.iterrows():
             issue = row["議題名稱"]
@@ -136,12 +160,15 @@ elif 戶號參數:
 
         if st.button("📤 送出投票"):
             df = pd.DataFrame(vote_records, columns=["戶號", "議題", "選項"])
+            # 讀取區分比例
+            ratio = units_df.loc[units_df["戶號"] == 戶號參數, "區分比例"].values
+            ratio_value = ratio[0] if len(ratio) > 0 else 0
+            df["區分比例"] = ratio_value
             df["時間"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.session_state.votes = pd.concat([st.session_state.votes, df], ignore_index=True)
             save_votes(st.session_state.votes)
-            st.success("✅ 投票完成，感謝您的參與！")
-    else:
-        st.warning("⚠️ 尚未上傳議題清單，請聯絡管理員。")
+            st.success("✅ 投票完成，感謝您的參與！請勿重複投票。")
+            st.experimental_rerun()
 
 # ==============================
 # 預設首頁提示
