@@ -1,12 +1,27 @@
+# 基礎環境
 pip>=25.2
 setuptools>=69.0
 wheel>=0.43
-numpy==1.26.4
+
+# 資料處理與 Web 介面
 streamlit==1.38.0
 pandas==2.2.2
+numpy==1.26.4
+
+# 視覺化
+plotly==5.24.1
+matplotlib==3.9.0
+
+# 圖片與 QR Code
 qrcode[pil]==7.4.2
 Pillow==10.4.0
+
+# Excel / CSV 輸出
 openpyxl==3.1.5
 XlsxWriter==3.2.0
-matplotlib==3.9.0
+
+# 自動刷新功能
 streamlit-autorefresh==1.0.1
+
+# 時區處理
+pytz==2024.1
