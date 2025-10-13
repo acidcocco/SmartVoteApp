@@ -119,61 +119,72 @@ if is_admin:
         elif now >= deadline:
             st.info("📢 投票截止，已自動停止刷新。")
 
-        # ==============================
-        # 投票統計結果顯示
-        # ==============================
-        if os.path.exists("votes.csv"):
-            votes_df = pd.read_csv("votes.csv")
-            merged_df = votes_df.merge(units_df, on="戶號", how="left")
+# ==============================
+# 投票統計結果顯示
+# ==============================
+if os.path.exists("votes.csv"):
+    votes_df = pd.read_csv("votes.csv")
+    merged_df = votes_df.merge(units_df, on="戶號", how="left")
 
-            result_list = []
-            for issue in merged_df["議題"].unique():
-                issue_data = merged_df[merged_df["議題"] == issue]
-                agree = issue_data[issue_data["選項"] == "同意"]
-                disagree = issue_data[issue_data["選項"] == "不同意"]
-                total = units_df["戶號"].nunique()
-                unvote = total - issue_data["戶號"].nunique()
+    # 🩵 自動偵測「比例」欄位名稱
+    ratio_col = None
+    for col in merged_df.columns:
+        if "比例" in col or "比率" in col or "持分" in col:
+            ratio_col = col
+            break
 
-                agree_ratio = agree["區分比例"].sum()
-                disagree_ratio = disagree["區分比例"].sum()
+    if ratio_col is None:
+        st.error("❌ 未在戶號清單中找到『區分比例』或相關欄位，請確認 Excel 標題名稱。")
+        st.stop()
 
-                result_list.append({
-                    "議題": issue,
-                    "同意人數": len(agree),
-                    "不同意人數": len(disagree),
-                    "未投票戶數": unvote,
-                    "同意比例": round(agree_ratio, 4),
-                    "不同意比例": round(disagree_ratio, 4),
-                })
+    result_list = []
+    for issue in merged_df["議題"].unique():
+        issue_data = merged_df[merged_df["議題"] == issue]
+        agree = issue_data[issue_data["選項"] == "同意"]
+        disagree = issue_data[issue_data["選項"] == "不同意"]
+        total = units_df["戶號"].nunique()
+        unvote = total - issue_data["戶號"].nunique()
 
-            stat_df = pd.DataFrame(result_list)
+        agree_ratio = agree[ratio_col].sum()
+        disagree_ratio = disagree[ratio_col].sum()
 
-            # 📢 截止後自動顯示公告
-            if now >= deadline:
-                st.markdown("""
-                <div style="background-color:#fce4ec;padding:15px;border-radius:10px;margin-bottom:10px">
-                <h4>📢 投票已截止！</h4>
-                <p>以下為最終投票結果。</p>
-                </div>
-                """, unsafe_allow_html=True)
+        result_list.append({
+            "議題": issue,
+            "同意人數": len(agree),
+            "不同意人數": len(disagree),
+            "未投票戶數": unvote,
+            "同意比例": round(agree_ratio, 4),
+            "不同意比例": round(disagree_ratio, 4),
+        })
 
-            st.subheader("📊 投票統計結果")
-            st.dataframe(stat_df, use_container_width=True)
+    stat_df = pd.DataFrame(result_list)
 
-            # 📈 長條圖
-            st.subheader("📈 區分比例長條圖（同意 vs 不同意）")
-            chart_df = stat_df.set_index("議題")[["同意比例", "不同意比例"]]
-            fig, ax = plt.subplots(figsize=(8, 4))
-            chart_df.plot(kind="bar", ax=ax, color=["green", "red"])
-            ax.set_ylabel("區分比例")
-            ax.set_xlabel("議題")
-            ax.set_title("各議題投票比例圖")
-            ax.legend(["同意", "不同意"])
-            st.pyplot(fig)
+    # 📢 截止後自動顯示公告
+    if now >= deadline:
+        st.markdown("""
+        <div style="background-color:#fce4ec;padding:15px;border-radius:10px;margin-bottom:10px">
+        <h4>📢 投票已截止！</h4>
+        <p>以下為最終投票結果。</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-            st.caption(f"📅 最後更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            st.warning("⚠️ 尚無投票資料。")
+    st.subheader("📊 投票統計結果")
+    st.dataframe(stat_df, use_container_width=True)
+
+    # 📈 長條圖
+    st.subheader("📈 區分比例長條圖（同意 vs 不同意）")
+    chart_df = stat_df.set_index("議題")[["同意比例", "不同意比例"]]
+    fig, ax = plt.subplots(figsize=(8, 4))
+    chart_df.plot(kind="bar", ax=ax, color=["green", "red"])
+    ax.set_ylabel("區分比例")
+    ax.set_xlabel("議題")
+    ax.set_title("各議題投票比例圖")
+    ax.legend(["同意", "不同意"])
+    st.pyplot(fig)
+
+    st.caption(f"📅 最後更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+else:
+    st.warning("⚠️ 尚無投票資料。")
 
 # ==============================
 # 投票模式（一般住戶）
