@@ -1,4 +1,4 @@
-# app.py - SmartVoteApp（帳號密碼外部設定 + 自動QR + 修正 query_params）
+# app.py - SmartVoteApp v3.3（Render版，修正Pillow錯誤+整合登入+ZIP下載）
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -9,7 +9,6 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
-from streamlit_autorefresh import st_autorefresh
 import pytz
 import plotly.express as px
 from PIL import Image, ImageDraw, ImageFont
@@ -134,7 +133,7 @@ def update_setting_active(active):
     conn.close()
 
 # ==============================
-# QR 產生函式（含文字）
+# 修正版 QR Code 產生函式
 # ==============================
 def generate_qr_with_text(unit):
     url = f"{BASE_URL}/?{urlencode({'戶號': unit})}"
@@ -149,10 +148,18 @@ def generate_qr_with_text(unit):
     text2 = "議題討論後掃瞄QR Code進行投票"
     lines = [text1, text2]
 
-    max_w = 0
-    total_h = 0
+    def measure_text(font, text):
+        try:
+            bbox = font.getbbox(text)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+        except Exception:
+            w, h = font.getmask(text).size
+        return w, h
+
+    max_w, total_h = 0, 0
     for line in lines:
-        w, h = font.getsize(line)
+        w, h = measure_text(font, line)
         max_w = max(max_w, w)
         total_h += h + 4
 
@@ -162,15 +169,13 @@ def generate_qr_with_text(unit):
 
     canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
     draw = ImageDraw.Draw(canvas)
-
     y = 10
     for line in lines:
-        w, h = font.getsize(line)
+        w, h = measure_text(font, line)
         draw.text(((canvas_w - w)//2, y), line, font=font, fill="black")
         y += h + 4
 
     canvas.paste(qr, ((canvas_w - qr_w)//2, y + 10))
-
     buf = io.BytesIO()
     canvas.save(buf, format="PNG")
     buf.seek(0)
@@ -182,17 +187,14 @@ def generate_qr_with_text(unit):
 st.set_page_config(page_title="SmartVoteApp", layout="wide")
 st.title("🗳️ SmartVoteApp 投票系統")
 
-# 使用新版 API（取代 experimental_get_query_params）
 qp = st.query_params
 unit_q = qp.get("戶號")
 
-# Session 狀態
 if "admin" not in st.session_state:
     st.session_state.admin = False
 if "admin_user" not in st.session_state:
     st.session_state.admin_user = None
 
-# 選單
 page = st.sidebar.selectbox("功能選單", ["首頁", "住戶投票", "管理員登入", "管理後台"])
 
 # ==============================
@@ -202,7 +204,7 @@ if page == "首頁":
     st.info("請使用專屬 QR Code 進入投票頁面（網址會包含 ?戶號=xxx）。")
 
 # ==============================
-# 住戶投票（透過戶號進入）
+# 住戶投票
 # ==============================
 elif page == "住戶投票":
     if not unit_q:
@@ -210,9 +212,9 @@ elif page == "住戶投票":
         st.stop()
 
     unit = str(unit_q)
-
     issues_path = os.path.join(DATA_DIR, "議題清單.xlsx")
     units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
+
     if not os.path.exists(issues_path) or not os.path.exists(units_path):
         st.warning("尚未由管理員上傳議題或戶號清單。")
         st.stop()
@@ -230,7 +232,6 @@ elif page == "住戶投票":
         st.warning("投票已截止或被管理員停止。")
         st.stop()
 
-    # 判斷是否已投票
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM votes WHERE 戶號 = ?", (unit,))
@@ -241,11 +242,11 @@ elif page == "住戶投票":
 
     st.header(f"🏠 戶號 {unit} 投票頁面")
     st.info(f"截止時間（台北）：{latest_end.strftime('%Y-%m-%d %H:%M:%S')}")
-    issues = issues_df.iloc[:,0].astype(str).tolist()
 
+    issues = issues_df.iloc[:,0].astype(str).tolist()
     form = st.form("vote_form")
     choices = {}
-    for i, issue in enumerate(issues):
+    for issue in issues:
         choices[issue] = form.radio(issue, ["同意", "不同意"], horizontal=True)
     submit = form.form_submit_button("📤 送出投票")
 
@@ -255,7 +256,7 @@ elif page == "住戶投票":
         if row.shape[1] >= 2:
             try:
                 ratio = float(row.iloc[0, 1])
-            except Exception:
+            except:
                 pass
         now_iso = datetime.now(TZ).isoformat()
         recs = [(unit, issue, choice, ratio, now_iso) for issue, choice in choices.items()]
@@ -304,14 +305,13 @@ elif page == "管理後台":
     if issues_file:
         with open(os.path.join(DATA_DIR, "議題清單.xlsx"), "wb") as f:
             f.write(issues_file.getvalue())
-        st.success("已上傳議題清單")
+        st.success("✅ 已上傳議題清單")
 
     if units_file:
         with open(os.path.join(DATA_DIR, "戶號清單.xlsx"), "wb") as f:
             f.write(units_file.getvalue())
-        st.success("已上傳戶號清單")
+        st.success("✅ 已上傳戶號清單")
 
-    # 產生 QR Code ZIP
     st.markdown("---")
     st.subheader("🧾 產生戶號專屬 QR Code")
     units_path = os.path.join(DATA_DIR, "戶號清單.xlsx")
@@ -328,3 +328,37 @@ elif page == "管理後台":
             st.download_button("⬇️ 下載 QR Code ZIP", zip_buf, "QRCodes.zip", "application/zip")
     else:
         st.info("請先上傳戶號清單。")
+
+    st.markdown("---")
+    st.subheader("⏰ 投票截止設定")
+    latest_end, active = get_latest_setting()
+    end_time = st.datetime_input("設定截止時間（台北）", value=latest_end or (datetime.now(TZ) + timedelta(days=1)))
+    if st.button("✅ 更新截止時間"):
+        add_setting(end_time)
+        st.success(f"已設定截止時間：{end_time}")
+    if st.button("⏹ 停止投票"):
+        update_setting_active(0)
+        st.warning("已暫停投票")
+    if st.button("▶️ 開啟投票"):
+        update_setting_active(1)
+        st.success("投票重新開啟")
+
+    st.markdown("---")
+    st.subheader("📊 投票結果統計")
+    df = fetch_votes_df()
+    if df.empty:
+        st.info("目前尚無投票資料。")
+    else:
+        summary = df.groupby(["議題","選項"]).agg(人數=("戶號","count")).reset_index()
+        total = summary.groupby("議題")["人數"].transform("sum")
+        summary["比例(%)"] = (summary["人數"] / total * 100).round(2)
+        st.dataframe(summary)
+
+        fig = px.bar(summary, x="議題", y="人數", color="選項", barmode="group",
+                     text="比例(%)", title="各議題投票結果（人數與比例）")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.download_button("⬇️ 匯出結果 Excel", data=summary.to_excel(index=False, engine="openpyxl"),
+                           file_name="投票結果.xlsx")
+        st.download_button("⬇️ 匯出結果 CSV", data=summary.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="投票結果.csv", mime="text/csv")
