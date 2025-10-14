@@ -329,16 +329,27 @@ elif page == "管理後台":
     else:
         st.info("請先上傳戶號清單。")
 
-    st.markdown("---")
+        st.markdown("---")
     st.subheader("⏰ 投票截止設定")
     latest_end, active = get_latest_setting()
-    end_time = st.datetime_input("設定截止時間（台北）", value=latest_end or (datetime.now(TZ) + timedelta(days=1)))
+
+    # 若有舊設定就使用，否則預設明天同時間
+    default_dt = latest_end or (datetime.now(TZ) + timedelta(days=1))
+    date_part = st.date_input("截止日期", value=default_dt.date())
+    time_part = st.time_input("截止時間", value=default_dt.time())
+
+    # 組合日期時間
+    end_time = datetime.combine(date_part, time_part)
+    end_time = TZ.localize(end_time)
+
     if st.button("✅ 更新截止時間"):
         add_setting(end_time)
-        st.success(f"已設定截止時間：{end_time}")
+        st.success(f"已設定截止時間：{end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
     if st.button("⏹ 停止投票"):
         update_setting_active(0)
         st.warning("已暫停投票")
+
     if st.button("▶️ 開啟投票"):
         update_setting_active(1)
         st.success("投票重新開啟")
