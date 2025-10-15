@@ -128,12 +128,26 @@ def admin_dashboard():
     # 產生 QR Code
     st.subheader("🏘️ 住戶 QR Code 投票連結")
     st.caption("請於議題討論後掃描 QR Code 進行投票。")
+
     df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
-    if len(df_house) > 0:
-        base_url = "https://yourapp.streamlit.app"
-        qr_zip = generate_qr_codes(base_url, df_house)
-        st.download_button("📦 下載 QR Code ZIP", data=qr_zip,
-                           file_name="qrcodes.zip", mime="application/zip")
+    if len(df_house) == 0:
+        st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
+    else:
+        base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://yourapp.streamlit.app")
+        st.info("網址會自動加上戶號參數，例如：https://yourapp.streamlit.app?unit=101")
+
+        if st.button("📦 產生 QR Code ZIP"):
+            try:
+                qr_zip = generate_qr_codes(base_url, df_house)
+                st.download_button(
+                    "📥 下載 QR Code 壓縮包",
+                    data=qr_zip,
+                    file_name="QRcodes.zip",
+                    mime="application/zip"
+                )
+                st.success("✅ 已成功產生 QR Code ZIP 檔。")
+            except Exception as e:
+                st.error(f"產生 QR Code 時發生錯誤：{e}")
 
     # 顯示投票統計
     st.subheader("📈 投票結果統計")
