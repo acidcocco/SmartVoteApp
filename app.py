@@ -196,28 +196,36 @@ def admin_dashboard():
         st.success(f"截止時間已設定為：{cutoff_str}")
 
     # 產生 QR Code
-    st.subheader("🏘️ 住戶 QR Code 投票連結")
-    st.caption("請於議題討論後掃描 QR Code 進行投票。")
+st.subheader("🏘️ 住戶 QR Code 投票連結")
+st.caption("請於議題討論後掃描 QR Code 進行投票。")
 
-    df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
-    if len(df_house) == 0:
-        st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
-    else:
-        base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
-        st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A1-3F")
+df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
+if len(df_house) == 0:
+    st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
+else:
+    base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
+    st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A1-3F")
 
-        if st.button("📦 產生 QR Code ZIP"):
-            try:
-                qr_zip = generate_qr_codes(base_url, df_house)
-                st.download_button(
-                    "📥 下載 QR Code 壓縮包",
-                    data=qr_zip,
-                    file_name="QRcodes.zip",
-                    mime="application/zip"
-                )
-                st.success("✅ 已成功產生 QR Code ZIP 檔。")
-            except Exception as e:
-                st.error(f"產生 QR Code 時發生錯誤：{e}")
+    # 把住戶清單暫存起來，避免重新執行時丟失
+    st.session_state["households"] = df_house
+
+    if st.button("📦 產生 QR Code ZIP"):
+        try:
+            qr_zip = generate_qr_codes(base_url, st.session_state["households"])
+            st.session_state["qr_zip_data"] = qr_zip.getvalue()
+            st.success("✅ QR Code 已產生，請按下方下載。")
+
+        except Exception as e:
+            st.error(f"產生 QR Code 時發生錯誤：{e}")
+
+    # 若已有暫存檔，可顯示下載鈕
+    if "qr_zip_data" in st.session_state and st.session_state["qr_zip_data"]:
+        st.download_button(
+            label="📥 下載 QR Code 壓縮包",
+            data=st.session_state["qr_zip_data"],
+            file_name="QRcodes.zip",
+            mime="application/zip"
+        )
 
     # 顯示投票統計
     st.subheader("📈 投票結果統計")
