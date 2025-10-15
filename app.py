@@ -204,7 +204,7 @@ def admin_dashboard():
         st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
     else:
         base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
-        st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A")
+        st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A1-3F")
 
         if st.button("📦 產生 QR Code ZIP"):
             try:
