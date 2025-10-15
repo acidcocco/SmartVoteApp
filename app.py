@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import time as t
 from PIL import Image, ImageDraw, ImageFont
 import streamlit.components.v1 as components
+from pytz import timezone
+from streamlit_autorefresh import st_autorefresh
 
 # ===============================
 # 初始化設定
@@ -79,7 +81,6 @@ def generate_qr_codes(base_url, households):
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-            # 在 QR 圖下方加上戶號文字 (自動換行／縮放)
             draw = ImageDraw.Draw(img)
             try:
                 font = ImageFont.truetype("arial.ttf", 20)
@@ -87,23 +88,13 @@ def generate_qr_codes(base_url, households):
                 font = ImageFont.load_default()
 
             text = f"戶號: {unit}"
-            # 計算文字寬高：支援不同 Pillow 版本的 fallback
             try:
                 text_w, text_h = draw.textsize(text, font=font)
             except Exception:
-                try:
-                    bbox = draw.textbbox((0, 0), text, font=font)
-                    text_w = bbox[2] - bbox[0]
-                    text_h = bbox[3] - bbox[1]
-                except Exception:
-                    try:
-                        text_w, text_h = font.getsize(text)
-                    except Exception:
-                        bbox = font.getbbox(text)
-                        text_w = bbox[2] - bbox[0]
-                        text_h = bbox[3] - bbox[1]
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
 
-            # 如果圖片寬度不足，調整文字大小或換行 (簡單處理)
             img_w, img_h = img.size
             padding = 8
             new_h = img_h + text_h + padding * 2
@@ -117,7 +108,6 @@ def generate_qr_codes(base_url, households):
             img_byte = io.BytesIO()
             new_img.save(img_byte, format="PNG")
             img_byte.seek(0)
-            # 檔名使用安全字元
             safe_name = unit.replace("/", "_").replace("\\", "_").replace(" ", "_")
             zipf.writestr(f"{safe_name}.png", img_byte.read())
     zip_buffer.seek(0)
@@ -125,8 +115,8 @@ def generate_qr_codes(base_url, households):
 
 
 def current_time_str_server():
-    # 以伺服器時區顯示（不假設時區）
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tz = timezone("Asia/Taipei")
+    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 # ===============================
 # 登入與權限
@@ -195,11 +185,11 @@ def admin_dashboard():
         else:
             st.error("CSV 必須包含欄位：議題")
 
-    # 設定截止時間 (以分鐘為單位選項)
+    # 設定截止時間
     st.subheader("📅 設定投票截止時間（以現在起算）")
     minutes_option = st.selectbox("選擇距今的截止時間（分鐘）", [5,10,15,20,25,30], index=2)
     if st.button("💾 設定截止時間（從現在起）"):
-        cutoff_dt = datetime.now() + timedelta(minutes=int(minutes_option))
+        cutoff_dt = datetime.now(timezone("Asia/Taipei")) + timedelta(minutes=int(minutes_option))
         cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
         with open(CUTOFF_FILE, "w") as f:
             f.write(cutoff_str)
@@ -213,8 +203,8 @@ def admin_dashboard():
     if len(df_house) == 0:
         st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
     else:
-        base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://yourapp.streamlit.app")
-        st.info("網址會自動加上戶號參數，例如：https://yourapp.streamlit.app?unit=101")
+        base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
+        st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A")
 
         if st.button("📦 產生 QR Code ZIP"):
             try:
@@ -231,6 +221,8 @@ def admin_dashboard():
 
     # 顯示投票統計
     st.subheader("📈 投票結果統計")
+    count = st_autorefresh(interval=10 * 1000, key="datarefresh")
+
     if os.path.exists(VOTE_FILE):
         df_vote = pd.read_csv(VOTE_FILE)
         df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
@@ -253,64 +245,44 @@ def admin_dashboard():
                 })
             df_result = pd.DataFrame(result_list)
             st.dataframe(df_result)
-
             st.caption(f"統計時間（伺服器）：{current_time_str_server()}")
-
-            # 自動刷新控制
-            st.markdown("---")
-            auto_refresh = st.checkbox("🔄 自動更新開啟 / 停止", value=st.session_state.auto_refresh)
-            st.session_state.auto_refresh = auto_refresh
-            if st.session_state.auto_refresh:
-                t.sleep(10)
-                st.experimental_rerun()
         else:
             st.info("尚無投票紀錄或議題資料。")
     else:
         st.info("尚未有投票資料。")
 
 # ===============================
-# 住戶投票頁 (一次送出全部議題)
+# 住戶投票頁
 # ===============================
 
 def voter_page():
-    # 嘗試以多種方式取得 unit，確保完整顯示（避免被截斷）
-    unit = None
+    # 嘗試取得戶號
     try:
-        unit = st.query_params.get("unit", [None])[0]
+        unit = st.query_params.get("unit")
     except Exception:
-        unit = None
-    # 備援：舊版 API
-    if not unit:
-        try:
-            qp = st.experimental_get_query_params()
-            unit = qp.get("unit", [None])[0]
-        except Exception:
-            unit = None
+        qp = st.experimental_get_query_params()
+        unit = qp.get("unit", [None])[0] if "unit" in qp else None
 
     if not unit:
         st.error("❌ 無法辨識戶號，請使用正確的 QR Code 連結進入。")
         return
 
-    # 顯示投票頁與本機時間（避免伺服器時差）
     st.title("📮 投票頁面")
     st.write(f"👤 戶號：**{unit}**")
-
     st.caption("系統時間（伺服器）: " + current_time_str_server())
-    # 顯示使用者本機時間（透過瀏覽器）
-    st.markdown("**您的電腦時間：**")
+
     components.html("""
     <div id='client-time'></div>
     <script>
     function update(){
       const el = document.getElementById('client-time');
-      el.innerText = new Date().toLocaleString();
+      el.innerText = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
     }
     update();
     setInterval(update,1000);
     </script>
     """, height=50)
 
-    # 檢查投票是否開啟與截止時間
     voting_status = read_voting_status()
     if not voting_status.get("open"):
         st.warning("目前投票未開啟，請聯絡管理員。")
@@ -321,7 +293,7 @@ def voter_page():
             cutoff_str = f.read().strip()
         try:
             cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
-            if datetime.now() > cutoff_time:
+            if datetime.now(timezone("Asia/Taipei")) > cutoff_time:
                 st.warning(f"📢 投票已截止（截止時間：{cutoff_str}）")
                 show_final_results()
                 return
@@ -329,7 +301,6 @@ def voter_page():
             st.error("截止時間格式錯誤，請聯絡管理員。")
             return
 
-    # 載入議題
     df_topic = load_data(TOPIC_FILE, ["議題"])
     if len(df_topic) == 0:
         st.info("尚未設定投票議題。")
@@ -340,26 +311,21 @@ def voter_page():
 
     st.markdown("請對下列所有議題選擇「同意/不同意」，完成後按「一次送出」")
 
-    # 使用表單一次送出
     with st.form(key="vote_form"):
         choices = {}
         for topic in df_topic["議題"]:
-            default = None
             if topic in voted_topics:
                 prev = df_vote[(df_vote["戶號"] == unit) & (df_vote["議題"] == topic)]["投票"].values[0]
                 st.info(f"您已投票：{topic} -> {prev}")
-                # 不提供更改已投票項目的選項
             else:
                 choices[topic] = st.radio(f"{topic}", ["同意", "不同意"], key=f"vote_{topic}")
         submit = st.form_submit_button("一次送出所有投票")
         if submit:
-            # 新增投票
             for topic, choice in choices.items():
                 df_vote.loc[len(df_vote)] = [unit, topic, choice]
-            # 儲存
             save_data(df_vote, VOTE_FILE)
             st.success("✅ 已成功送出所有投票。感謝您的參與！")
-            st.experimental_rerun()
+            st.rerun()
 
 # ===============================
 # 公告顯示
@@ -395,7 +361,7 @@ def show_final_results():
     st.caption(f"統計時間（伺服器）：{current_time_str_server()}")
 
 # ===============================
-# 主邏輯流程
+# 主邏輯
 # ===============================
 
 def main():
