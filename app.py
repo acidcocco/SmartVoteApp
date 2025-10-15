@@ -1,122 +1,36 @@
 import streamlit as st
 import pandas as pd
-import qrcode
-import io
-import zipfile
 import os
-import datetime
-from PIL import Image, ImageDraw, ImageFont
+import qrcode
+import json
+from datetime import datetime, timedelta
 from io import BytesIO
+from PIL import Image, ImageDraw
+import time
 
-# === 初始化資料 ===
-if "topics" not in st.session_state:
-    st.session_state["topics"] = []
-if "votes" not in st.session_state:
-    st.session_state["votes"] = {}
-if "vote_counts" not in st.session_state:
-    st.session_state["vote_counts"] = {}
-if "deadline" not in st.session_state:
-    st.session_state["deadline"] = None
-if "announcement_mode" not in st.session_state:
-    st.session_state["announcement_mode"] = False
-if "last_update" not in st.session_state:
-    st.session_state["last_update"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ===============================
+# 🔧 初始化設定
+# ===============================
+st.set_page_config(page_title="社區投票系統", page_icon="🏘️", layout="wide")
 
-# === 標題 ===
-st.set_page_config(page_title="社區投票系統", layout="wide")
+VOTE_FILE = "votes.csv"
+CONFIG_FILE = "admin_config.json"
+CUTOFF_FILE = "cutoff_time.txt"
 
-st.sidebar.title("🏘️ 社區投票系統")
-menu = st.sidebar.selectbox(
-    "功能選擇",
-    ["🏠 住戶投票", "🔐 管理員登入", "🧾 管理後台"]
-)
+# 初始化投票資料
+if not os.path.exists(VOTE_FILE):
+    df_init = pd.DataFrame(columns=["戶號", "意見", "投票時間"])
+    df_init.to_csv(VOTE_FILE, index=False, encoding="utf-8-sig")
 
-# === QR Code 產生輔助函式 ===
-def generate_qr_png_bytes_with_text(url, unit):
-    qr = qrcode.QRCode(box_size=8, border=2)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-    # 繪製文字
-    draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("arial.ttf", 22)
-    except:
-        font = ImageFont.load_default()
-    line = f"戶號：{unit}"
-
-    # ✅ Pillow >=10.0 相容寫法
-    bbox = draw.textbbox((0, 0), line, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    iw, ih = img.size
-
-    # 建立新畫布並加入下方文字
-    new_img = Image.new("RGB", (iw, ih + th + 15), "white")
-    new_img.paste(img, (0, 0))
-    draw = ImageDraw.Draw(new_img)
-    draw.text(((iw - tw) // 2, ih + 5), line, fill="black", font=font)
-
-    buf = BytesIO()
-    new_img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def generate_qr_zip_from_units(base_url, df):
-    mem_zip = io.BytesIO()
-    with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for _, row in df.iterrows():
-            unit = str(row["戶號"])
-            qr_url = f"{base_url}/?unit={unit}"
-            png = generate_qr_png_bytes_with_text(qr_url, unit)
-            zf.writestr(f"{unit}.png", png)
-    mem_zip.seek(0)
-    return mem_zip
-
-
-# === 頁面 1：住戶投票 ===
-def show_resident_page():
-    st.header("🏠 住戶投票")
-
-    unit = st.text_input("請輸入戶號以進行投票")
-    if not st.session_state["topics"]:
-        st.warning("目前尚未建立任何議題。")
-        return
-
-    if unit:
-        # 如果截止時間已過 → 公告模式
-        if st.session_state["announcement_mode"]:
-            st.success(f"📢 投票已截止。以下為最終統計（統計時間 {st.session_state['last_update']}）")
-            show_statistics()
-            return
-
-        # 投票操作
-        for idx, topic in enumerate(st.session_state["topics"]):
-            st.subheader(f"{idx+1}. {topic}")
-            vote = st.radio("請選擇您的意見：", ["同意", "不同意"], key=f"vote_{idx}")
-            if st.button(f"提交第 {idx+1} 題投票", key=f"submit_{idx}"):
-                if unit in st.session_state["votes"] and idx in st.session_state["votes"][unit]:
-                    st.warning("⚠️ 您已經對此議題投過票。")
-                else:
-                    if unit not in st.session_state["votes"]:
-                        st.session_state["votes"][unit] = {}
-                    st.session_state["votes"][unit][idx] = vote
-                    if idx not in st.session_state["vote_counts"]:
-                        st.session_state["vote_counts"][idx] = {"同意": 0, "不同意": 0}
-                    st.session_state["vote_counts"][idx][vote] += 1
-                    st.success(f"✅ 您的投票「{vote}」已提交！")
-
-        # 自動公告模式檢查
-        check_deadline()
-
-# === 頁面 2：管理員登入 ===
+# ===============================
+# 🔐 管理員登入
+# ===============================
 def show_admin_login():
     st.header("🔐 管理員登入")
 
     # 嘗試讀取 admin_config.json
     try:
-        with open("admin_config.json", "r", encoding="utf-8") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             admin_data = json.load(f)
     except FileNotFoundError:
         st.error("⚠️ 找不到 admin_config.json，請確認檔案存在於專案根目錄。")
@@ -130,104 +44,151 @@ def show_admin_login():
             st.session_state["is_admin"] = True
             st.session_state["admin_user"] = username
             st.success(f"登入成功！歡迎管理員 {username} 👋")
+            time.sleep(1)
+            st.rerun()
         else:
             st.error("帳號或密碼錯誤，請重新輸入。")
 
-# === 頁面 3：管理後台 ===
-def show_admin_dashboard():
-    if not st.session_state.get("is_admin"):
-        st.warning("請先登入管理員帳號。")
-        return
-
-    st.header("🧾 管理後台")
-
-    # 上傳議題
-    topic_file = st.file_uploader("上傳議題檔（.xlsx）", type="xlsx")
-    if topic_file:
-        df = pd.read_excel(topic_file)
-        st.session_state["topics"] = df.iloc[:, 0].tolist()
-        st.session_state["vote_counts"] = {
-            i: {"同意": 0, "不同意": 0} for i in range(len(df))
-        }
-        st.success(f"已儲存 {len(df)} 題議題")
-
-    # 顯示目前議題
-    if st.session_state["topics"]:
-        for i, t in enumerate(st.session_state["topics"]):
-            st.write(f"{i+1}. {t}")
-
-    # 上傳住戶清單
-    st.subheader("🏡 上傳住戶清單（需欄位「戶號」）")
-    dfu_file = st.file_uploader("上傳住戶清單", type="xlsx")
-    if dfu_file:
-        dfu = pd.read_excel(dfu_file)
-        st.session_state["units"] = dfu
-        st.success(f"已儲存 {len(dfu)} 戶資料")
-
-        base_url = st.text_input("網站基本 URL", value="https://smartvoteapp.onrender.com")
-        if st.button("📦 產生 QR Code ZIP"):
-            try:
-                zip_data = generate_qr_zip_from_units(base_url, dfu)
-                st.download_button(
-                    label="⬇️ 下載 QR Code ZIP",
-                    data=zip_data,
-                    file_name="qr_codes.zip",
-                    mime="application/zip"
-                )
-                st.success("✅ 已完成 QR Code ZIP 產生")
-            except Exception as e:
-                st.error(f"產生 QR Code 時發生錯誤：{e}")
-
-    # 截止時間設定
-    st.subheader("📅 投票截止時間設定")
-    deadline = st.datetime_input("設定截止時間", value=st.session_state["deadline"])
-    if st.button("儲存截止時間"):
-        st.session_state["deadline"] = deadline
-        st.success(f"截止時間已設定為 {deadline}")
-
-    # 統計區塊
-    st.subheader("📈 投票結果統計（每 10 秒自動更新）")
-    show_statistics()
-
-
-# === 統計顯示 ===
-def show_statistics():
-    import time
-    if not st.session_state["vote_counts"]:
+# ===============================
+# 📊 統計顯示函式
+# ===============================
+def show_vote_statistics(df, admin_mode=False):
+    if df.empty:
         st.info("目前尚無投票資料。")
         return
 
-    for i, topic in enumerate(st.session_state["topics"]):
-        data = st.session_state["vote_counts"].get(i, {"同意": 0, "不同意": 0})
-        st.write(f"**{i+1}. {topic}**")
-        st.progress(data["同意"] / (sum(data.values()) + 0.0001))
-        st.write(f"🟩 同意：{data['同意']}　🟥 不同意：{data['不同意']}")
-    st.session_state["last_update"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.caption(f"⏱️ 統計時間 {st.session_state['last_update']}")
-    st_autorefresh(interval=10_000, key="refresh_stat")
+    agree_count = len(df[df["意見"] == "同意"])
+    disagree_count = len(df[df["意見"] == "不同意"])
+    total = agree_count + disagree_count
+    agree_rate = round(agree_count / total * 100, 1) if total else 0
+    disagree_rate = round(disagree_count / total * 100, 1) if total else 0
 
+    st.write(f"🟩 同意：{agree_count} 票（{agree_rate}%）")
+    st.write(f"🟥 不同意：{disagree_count} 票（{disagree_rate}%）")
 
-# === 自動刷新 ===
-def st_autorefresh(interval=10000, key=None):
-    st.markdown(
-        f"""
-        <meta http-equiv="refresh" content="{interval / 1000}">
-        """,
-        unsafe_allow_html=True,
+    chart_data = pd.DataFrame(
+        {"選項": ["同意", "不同意"], "票數": [agree_count, disagree_count]}
     )
+    st.bar_chart(chart_data.set_index("選項"))
 
+    st.caption(f"統計時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# === 截止時間檢查 ===
-def check_deadline():
-    if st.session_state["deadline"] and datetime.datetime.now() > st.session_state["deadline"]:
-        st.session_state["announcement_mode"] = True
-        st.session_state["last_update"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ===============================
+# 🏠 管理後台
+# ===============================
+def admin_dashboard():
+    st.title("📋 管理後台")
+    st.markdown("---")
 
+    # 讀取投票資料
+    df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig") if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "意見", "投票時間"])
 
-# === 主選單切換 ===
-if menu == "🏠 住戶投票":
-    show_resident_page()
-elif menu == "🔐 管理員登入":
-    show_admin_login()
-elif menu == "🧾 管理後台":
-    show_admin_dashboard()
+    # 設定截止時間
+    st.subheader("📅 設定投票截止時間")
+    now = datetime.now()
+    cutoff_default = now + timedelta(days=1)
+    cutoff_input = st.datetime_input("請選擇截止時間", value=cutoff_default)
+    if st.button("儲存截止時間"):
+        with open(CUTOFF_FILE, "w") as f:
+            f.write(cutoff_input.strftime("%Y-%m-%d %H:%M:%S"))
+        st.success(f"✅ 截止時間已設定為：{cutoff_input}")
+
+    # 產生 QR Code 圖文
+    st.subheader("🏘️ 住戶 QR Code 投票連結")
+    st.markdown("請於議題討論後掃描 QR Code 進行投票。")
+
+    unit_list = [f"A-{i:03d}" for i in range(1, 6)]  # 範例：A-001~A-005
+    for unit in unit_list:
+        qr = qrcode.make(f"{st.secrets.get('base_url', 'https://yourapp.streamlit.app')}?unit={unit}")
+        qr_img = Image.new("RGB", (500, 550), "white")
+        qr_img.paste(qr, (50, 20))
+        draw = ImageDraw.Draw(qr_img)
+        draw.text((160, 480), f"戶號：{unit}", fill="black")
+        st.image(qr_img, caption=f"{unit}.png", width=180)
+
+    st.markdown("---")
+
+    # 📈 投票結果報表（含自動刷新開關）
+    st.subheader("📈 投票結果統計")
+    auto_refresh = st.toggle("🔄 自動更新（每 10 秒）", value=True)
+
+    placeholder = st.empty()
+    refresh_interval = 10  # 秒
+
+    if auto_refresh:
+        # 自動更新模式
+        while True:
+            with placeholder.container():
+                df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig") if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "意見", "投票時間"])
+                show_vote_statistics(df, admin_mode=True)
+                st.caption(f"⏱️ 最後更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            time.sleep(refresh_interval)
+            st.rerun()
+    else:
+        # 靜態模式
+        with placeholder.container():
+            show_vote_statistics(df, admin_mode=True)
+            st.caption(f"⏱️ 統計時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# ===============================
+# 🗳️ 投票頁（僅允許 QR Code 進入）
+# ===============================
+def voter_page():
+    unit = st.query_params.get("unit", [None])[0]
+    if not unit:
+        st.error("❌ 無法辨識戶號，請使用正確的 QR Code 連結進入。")
+        st.stop()
+
+    st.title(f"🗳️ {unit} 戶投票頁面")
+
+    # 檢查是否截止
+    if os.path.exists(CUTOFF_FILE):
+        with open(CUTOFF_FILE, "r") as f:
+            cutoff_str = f.read().strip()
+            cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
+        if datetime.now() > cutoff_time:
+            st.warning("📢 投票已截止，以下為最終統計結果：")
+            df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig")
+            show_vote_statistics(df)
+            st.stop()
+
+    # 已投過檢查
+    df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig")
+    if unit in df["戶號"].values:
+        st.info("您已完成投票，感謝您的參與 🙏")
+        show_vote_statistics(df)
+        st.stop()
+
+    # 投票操作
+    choice = st.radio("請選擇您的意見：", ["同意", "不同意"])
+    if st.button("送出投票"):
+        new_row = pd.DataFrame({"戶號": [unit], "意見": [choice], "投票時間": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]})
+        df = pd.concat([df, new_row], ignore_index=True)
+        df.to_csv(VOTE_FILE, index=False, encoding="utf-8-sig")
+        st.success("✅ 投票成功，感謝您的參與！")
+
+# ===============================
+# 🚀 主頁流程
+# ===============================
+def main():
+    query_params = st.query_params
+    if "unit" in query_params:
+        voter_page()
+        return
+
+    if st.session_state.get("is_admin"):
+        admin_dashboard()
+    elif st.session_state.get("page") == "admin_login":
+        show_admin_login()
+    else:
+        st.title("🏘️ 社區投票系統")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔐 管理員登入"):
+                st.session_state.page = "admin_login"
+        with col2:
+            if st.button("📋 管理後台"):
+                st.session_state.page = "admin_login"
+
+if __name__ == "__main__":
+    main()
