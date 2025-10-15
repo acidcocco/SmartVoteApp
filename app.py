@@ -87,7 +87,21 @@ def generate_qr_codes(base_url, households):
                 font = ImageFont.load_default()
 
             text = f"戶號: {unit}"
-            text_w, text_h = draw.textsize(text, font=font)
+            # 計算文字寬高：支援不同 Pillow 版本的 fallback
+            try:
+                text_w, text_h = draw.textsize(text, font=font)
+            except Exception:
+                try:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_w = bbox[2] - bbox[0]
+                    text_h = bbox[3] - bbox[1]
+                except Exception:
+                    try:
+                        text_w, text_h = font.getsize(text)
+                    except Exception:
+                        bbox = font.getbbox(text)
+                        text_w = bbox[2] - bbox[0]
+                        text_h = bbox[3] - bbox[1]
 
             # 如果圖片寬度不足，調整文字大小或換行 (簡單處理)
             img_w, img_h = img.size
