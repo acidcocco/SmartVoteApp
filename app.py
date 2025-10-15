@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import qrcode
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from io import BytesIO
 from PIL import Image, ImageDraw
 import time
@@ -28,7 +28,6 @@ if not os.path.exists(VOTE_FILE):
 def show_admin_login():
     st.header("🔐 管理員登入")
 
-    # 嘗試讀取 admin_config.json
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             admin_data = json.load(f)
@@ -80,14 +79,17 @@ def admin_dashboard():
     st.title("📋 管理後台")
     st.markdown("---")
 
-    # 讀取投票資料
     df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig") if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "意見", "投票時間"])
 
-    # 設定截止時間
+    # 📅 設定投票截止時間（修正版）
     st.subheader("📅 設定投票截止時間")
     now = datetime.now()
     cutoff_default = now + timedelta(days=1)
-    cutoff_input = st.datetime_input("請選擇截止時間", value=cutoff_default)
+
+    date_sel = st.date_input("選擇日期", value=cutoff_default.date())
+    time_sel = st.time_input("選擇時間", value=dtime(hour=cutoff_default.hour, minute=cutoff_default.minute))
+    cutoff_input = datetime.combine(date_sel, time_sel)
+
     if st.button("儲存截止時間"):
         with open(CUTOFF_FILE, "w") as f:
             f.write(cutoff_input.strftime("%Y-%m-%d %H:%M:%S"))
@@ -99,24 +101,24 @@ def admin_dashboard():
 
     unit_list = [f"A-{i:03d}" for i in range(1, 6)]  # 範例：A-001~A-005
     for unit in unit_list:
-        qr = qrcode.make(f"{st.secrets.get('base_url', 'https://yourapp.streamlit.app')}?unit={unit}")
+        base_url = st.secrets.get("base_url", "https://yourapp.streamlit.app")
+        qr = qrcode.make(f"{base_url}?unit={unit}")
         qr_img = Image.new("RGB", (500, 550), "white")
         qr_img.paste(qr, (50, 20))
         draw = ImageDraw.Draw(qr_img)
-        draw.text((160, 480), f"戶號：{unit}", fill="black")
+        draw.text((140, 480), f"戶號：{unit}\n請於議題討論後掃描QR Code進行投票", fill="black")
         st.image(qr_img, caption=f"{unit}.png", width=180)
 
     st.markdown("---")
 
-    # 📈 投票結果報表（含自動刷新開關）
+    # 📈 投票結果報表 + 自動刷新開關
     st.subheader("📈 投票結果統計")
     auto_refresh = st.toggle("🔄 自動更新（每 10 秒）", value=True)
-
     placeholder = st.empty()
     refresh_interval = 10  # 秒
 
     if auto_refresh:
-        # 自動更新模式
+        st.caption("🟢 自動更新中，每 10 秒重新整理一次。")
         while True:
             with placeholder.container():
                 df = pd.read_csv(VOTE_FILE, encoding="utf-8-sig") if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "意見", "投票時間"])
@@ -125,10 +127,9 @@ def admin_dashboard():
             time.sleep(refresh_interval)
             st.rerun()
     else:
-        # 靜態模式
+        st.caption("🛑 自動更新已停止。")
         with placeholder.container():
             show_vote_statistics(df, admin_mode=True)
-            st.caption(f"⏱️ 統計時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # ===============================
 # 🗳️ 投票頁（僅允許 QR Code 進入）
@@ -181,14 +182,18 @@ def main():
     elif st.session_state.get("page") == "admin_login":
         show_admin_login()
     else:
-        st.title("🏘️ 社區投票系統")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔐 管理員登入"):
-                st.session_state.page = "admin_login"
-        with col2:
-            if st.button("📋 管理後台"):
-                st.session_state.page = "admin_login"
+        with st.sidebar:
+            choice = st.selectbox("功能選單", ["🏠 首頁", "🔐 管理員登入", "📋 管理後台"])
+        if choice == "🏠 首頁":
+            st.title("🏘️ 社區投票系統")
+            st.markdown("請使用 QR Code 進行投票或登入後台管理。")
+        elif choice == "🔐 管理員登入":
+            show_admin_login()
+        elif choice == "📋 管理後台":
+            if st.session_state.get("is_admin"):
+                admin_dashboard()
+            else:
+                show_admin_login()
 
 if __name__ == "__main__":
     main()
