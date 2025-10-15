@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -6,8 +5,10 @@ import io
 import zipfile
 import json
 import os
-from datetime import datetime, date, time
+from datetime import datetime, timedelta
 import time as t
+from PIL import Image, ImageDraw, ImageFont
+import streamlit.components.v1 as components
 
 # ===============================
 # 初始化設定
@@ -28,6 +29,12 @@ HOUSEHOLD_FILE = os.path.join(DATA_DIR, "households.csv")
 TOPIC_FILE = os.path.join(DATA_DIR, "topics.csv")
 VOTE_FILE = os.path.join(DATA_DIR, "votes.csv")
 CUTOFF_FILE = os.path.join(DATA_DIR, "cutoff.txt")
+VOTING_STATUS_FILE = os.path.join(DATA_DIR, "voting_status.json")
+
+# 初始化 voting status
+if not os.path.exists(VOTING_STATUS_FILE):
+    with open(VOTING_STATUS_FILE, "w") as f:
+        json.dump({"open": False}, f)
 
 # ===============================
 # 工具函式
@@ -42,30 +49,75 @@ def load_data(file_path, columns=None):
     else:
         return pd.DataFrame(columns=columns)
 
+
 def save_data(df, file_path):
     df.to_csv(file_path, index=False)
 
+
+def read_voting_status():
+    try:
+        with open(VOTING_STATUS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"open": False}
+
+
+def write_voting_status(status: bool):
+    with open(VOTING_STATUS_FILE, "w") as f:
+        json.dump({"open": bool(status)}, f)
+
+
 def generate_qr_codes(base_url, households):
-    """產生每戶 QR Code 並打包成 zip"""
+    """產生每戶 QR Code 並打包成 zip，且在圖片下方標示戶號"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zipf:
         for _, row in households.iterrows():
-            unit = row["戶號"]
+            unit = str(row["戶號"])
             url = f"{base_url}?unit={unit}"
-            img = qrcode.make(url)
+            qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+            # 在 QR 圖下方加上戶號文字 (自動換行／縮放)
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 20)
+            except Exception:
+                font = ImageFont.load_default()
+
+            text = f"戶號: {unit}"
+            text_w, text_h = draw.textsize(text, font=font)
+
+            # 如果圖片寬度不足，調整文字大小或換行 (簡單處理)
+            img_w, img_h = img.size
+            padding = 8
+            new_h = img_h + text_h + padding * 2
+            new_img = Image.new("RGB", (img_w, new_h), "white")
+            new_img.paste(img, (0, 0))
+            draw2 = ImageDraw.Draw(new_img)
+            text_x = (img_w - text_w) // 2
+            text_y = img_h + padding
+            draw2.text((text_x, text_y), text, fill=(0, 0, 0), font=font)
+
             img_byte = io.BytesIO()
-            img.save(img_byte, format="PNG")
+            new_img.save(img_byte, format="PNG")
             img_byte.seek(0)
-            zipf.writestr(f"{unit}.png", img_byte.read())
+            # 檔名使用安全字元
+            safe_name = unit.replace("/", "_").replace("\\", "_").replace(" ", "_")
+            zipf.writestr(f"{safe_name}.png", img_byte.read())
     zip_buffer.seek(0)
     return zip_buffer
 
-def current_time_str():
+
+def current_time_str_server():
+    # 以伺服器時區顯示（不假設時區）
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ===============================
 # 登入與權限
 # ===============================
+
 def show_admin_login():
     st.header("🔐 管理員登入")
     try:
@@ -89,12 +141,27 @@ def show_admin_login():
 # ===============================
 # 管理後台
 # ===============================
+
 def admin_dashboard():
     st.title("📋 管理後台")
 
+    # 投票開關
+    st.subheader("🔁 投票控制")
+    status = read_voting_status()
+    st.write(f"目前投票狀態：**{'開啟' if status.get('open') else '關閉'}**")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("▶️ 開啟投票"):
+            write_voting_status(True)
+            st.success("投票已開啟")
+    with col2:
+        if st.button("⏹ 停止投票"):
+            write_voting_status(False)
+            st.success("投票已停止")
+
     # 上傳住戶清單
     st.subheader("🏘️ 上傳住戶清單 (戶號 + 區分比例)")
-    household_file = st.file_uploader("請選擇 households.csv", type=["csv"])
+    household_file = st.file_uploader("請選擇 households.csv", type=["csv"]) 
     if household_file:
         df_house = pd.read_csv(household_file)
         if "戶號" in df_house.columns and "區分比例" in df_house.columns:
@@ -105,7 +172,7 @@ def admin_dashboard():
 
     # 上傳議題清單
     st.subheader("🗳️ 上傳議題清單 (欄位：議題)")
-    topic_file = st.file_uploader("請選擇 topics.csv", type=["csv"])
+    topic_file = st.file_uploader("請選擇 topics.csv", type=["csv"]) 
     if topic_file:
         df_topic = pd.read_csv(topic_file)
         if "議題" in df_topic.columns:
@@ -114,13 +181,12 @@ def admin_dashboard():
         else:
             st.error("CSV 必須包含欄位：議題")
 
-    # 截止時間設定
-    st.subheader("📅 設定投票截止時間")
-    cutoff_default = datetime.now().date()
-    cutoff_date = st.date_input("請選擇截止日期", value=cutoff_default)
-    cutoff_time = st.time_input("請選擇截止時間", value=time(23, 59))
-    if st.button("💾 儲存截止時間"):
-        cutoff_str = f"{cutoff_date} {cutoff_time}"
+    # 設定截止時間 (以分鐘為單位選項)
+    st.subheader("📅 設定投票截止時間（以現在起算）")
+    minutes_option = st.selectbox("選擇距今的截止時間（分鐘）", [5,10,15,20,25,30], index=2)
+    if st.button("💾 設定截止時間（從現在起）"):
+        cutoff_dt = datetime.now() + timedelta(minutes=int(minutes_option))
+        cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
         with open(CUTOFF_FILE, "w") as f:
             f.write(cutoff_str)
         st.success(f"截止時間已設定為：{cutoff_str}")
@@ -162,15 +228,19 @@ def admin_dashboard():
             for topic in df_topic["議題"]:
                 agree_sum = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "同意"), "區分比例"].sum()
                 disagree_sum = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意"), "區分比例"].sum()
+                agree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "同意")].shape[0]
+                disagree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意")].shape[0]
                 result_list.append({
                     "議題": topic,
                     "同意比例": round(agree_sum, 4),
-                    "不同意比例": round(disagree_sum, 4)
+                    "不同意比例": round(disagree_sum, 4),
+                    "同意人數": int(agree_count),
+                    "不同意人數": int(disagree_count)
                 })
             df_result = pd.DataFrame(result_list)
             st.dataframe(df_result)
 
-            st.caption(f"統計時間：{current_time_str()}")
+            st.caption(f"統計時間（伺服器）：{current_time_str_server()}")
 
             # 自動刷新控制
             st.markdown("---")
@@ -178,32 +248,71 @@ def admin_dashboard():
             st.session_state.auto_refresh = auto_refresh
             if st.session_state.auto_refresh:
                 t.sleep(10)
-                st.rerun()
+                st.experimental_rerun()
         else:
             st.info("尚無投票紀錄或議題資料。")
     else:
         st.info("尚未有投票資料。")
 
 # ===============================
-# 住戶投票頁
+# 住戶投票頁 (一次送出全部議題)
 # ===============================
+
 def voter_page():
-    unit = st.query_params.get("unit", [None])[0]
+    # 嘗試以多種方式取得 unit，確保完整顯示（避免被截斷）
+    unit = None
+    try:
+        unit = st.query_params.get("unit", [None])[0]
+    except Exception:
+        unit = None
+    # 備援：舊版 API
+    if not unit:
+        try:
+            qp = st.experimental_get_query_params()
+            unit = qp.get("unit", [None])[0]
+        except Exception:
+            unit = None
+
     if not unit:
         st.error("❌ 無法辨識戶號，請使用正確的 QR Code 連結進入。")
         return
 
+    # 顯示投票頁與本機時間（避免伺服器時差）
     st.title("📮 投票頁面")
     st.write(f"👤 戶號：**{unit}**")
 
-    # 檢查截止時間
+    st.caption("系統時間（伺服器）: " + current_time_str_server())
+    # 顯示使用者本機時間（透過瀏覽器）
+    st.markdown("**您的電腦時間：**")
+    components.html("""
+    <div id='client-time'></div>
+    <script>
+    function update(){
+      const el = document.getElementById('client-time');
+      el.innerText = new Date().toLocaleString();
+    }
+    update();
+    setInterval(update,1000);
+    </script>
+    """, height=50)
+
+    # 檢查投票是否開啟與截止時間
+    voting_status = read_voting_status()
+    if not voting_status.get("open"):
+        st.warning("目前投票未開啟，請聯絡管理員。")
+        return
+
     if os.path.exists(CUTOFF_FILE):
         with open(CUTOFF_FILE, "r") as f:
             cutoff_str = f.read().strip()
-        cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
-        if datetime.now() > cutoff_time:
-            st.warning(f"📢 投票已截止（截止時間：{cutoff_str}）")
-            show_final_results()
+        try:
+            cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
+            if datetime.now() > cutoff_time:
+                st.warning(f"📢 投票已截止（截止時間：{cutoff_str}）")
+                show_final_results()
+                return
+        except Exception:
+            st.error("截止時間格式錯誤，請聯絡管理員。")
             return
 
     # 載入議題
@@ -212,29 +321,40 @@ def voter_page():
         st.info("尚未設定投票議題。")
         return
 
-    df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"])
+    df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"]) if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "議題", "投票"])
     voted_topics = df_vote[df_vote["戶號"] == unit]["議題"].tolist()
 
-    for topic in df_topic["議題"]:
-        st.markdown(f"### 🗳️ {topic}")
-        if topic in voted_topics:
-            prev = df_vote[(df_vote["戶號"] == unit) & (df_vote["議題"] == topic)]["投票"].values[0]
-            st.info(f"您已投票：{prev}")
-        else:
-            choice = st.radio(f"請選擇您對「{topic}」的意見：", ["同意", "不同意"], key=topic)
-            if st.button(f"提交「{topic}」的投票", key=f"btn_{topic}"):
+    st.markdown("請對下列所有議題選擇「同意/不同意」，完成後按「一次送出」")
+
+    # 使用表單一次送出
+    with st.form(key="vote_form"):
+        choices = {}
+        for topic in df_topic["議題"]:
+            default = None
+            if topic in voted_topics:
+                prev = df_vote[(df_vote["戶號"] == unit) & (df_vote["議題"] == topic)]["投票"].values[0]
+                st.info(f"您已投票：{topic} -> {prev}")
+                # 不提供更改已投票項目的選項
+            else:
+                choices[topic] = st.radio(f"{topic}", ["同意", "不同意"], key=f"vote_{topic}")
+        submit = st.form_submit_button("一次送出所有投票")
+        if submit:
+            # 新增投票
+            for topic, choice in choices.items():
                 df_vote.loc[len(df_vote)] = [unit, topic, choice]
-                save_data(df_vote, VOTE_FILE)
-                st.success(f"✅ 已提交：{choice}")
-                st.rerun()
+            # 儲存
+            save_data(df_vote, VOTE_FILE)
+            st.success("✅ 已成功送出所有投票。感謝您的參與！")
+            st.experimental_rerun()
 
 # ===============================
 # 公告顯示
 # ===============================
+
 def show_final_results():
     st.header("📢 投票結果公告")
 
-    df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"])
+    df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"]) if os.path.exists(VOTE_FILE) else pd.DataFrame()
     df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
     df_topic = load_data(TOPIC_FILE, ["議題"])
 
@@ -247,21 +367,26 @@ def show_final_results():
     for topic in df_topic["議題"]:
         agree_sum = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "同意"), "區分比例"].sum()
         disagree_sum = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意"), "區分比例"].sum()
+        agree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "同意")].shape[0]
+        disagree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意")].shape[0]
         result_list.append({
             "議題": topic,
             "同意比例": round(agree_sum, 4),
-            "不同意比例": round(disagree_sum, 4)
+            "不同意比例": round(disagree_sum, 4),
+            "同意人數": int(agree_count),
+            "不同意人數": int(disagree_count)
         })
     df_result = pd.DataFrame(result_list)
     st.dataframe(df_result)
-    st.caption(f"統計時間：{current_time_str()}")
+    st.caption(f"統計時間（伺服器）：{current_time_str_server()}")
 
 # ===============================
 # 主邏輯流程
 # ===============================
+
 def main():
     st.sidebar.title("功能選單")
-    choice = st.sidebar.radio("請選擇：", ["🏠 首頁", "🔐 管理員登入", "📋 管理後台"])
+    choice = st.sidebar.radio("請選擇：", ["🏠 首頁", "🔐 管理員登入", "📋 管理後台"]) 
 
     if choice == "🏠 首頁":
         voter_page()
