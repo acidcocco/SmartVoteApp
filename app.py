@@ -1,4 +1,8 @@
 import streamlit as st
+
+# ⚠️ 必須放在第一個 Streamlit 指令
+st.set_page_config(page_title="社區投票系統", layout="wide")
+
 import pandas as pd
 import qrcode
 import io
