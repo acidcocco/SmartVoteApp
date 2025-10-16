@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timedelta
 from pytz import timezone
 from streamlit_autorefresh import st_autorefresh
+from PIL import Image, ImageDraw, ImageFont
 
 # ===============================
 # 初始化設定
@@ -35,6 +36,7 @@ def save_csv(df, file_path):
     df.to_csv(file_path, index=False)
 
 def generate_qr_zip(households_df, base_url):
+    """產生含戶號文字的 QR Code ZIP（戶號顯示於上方）"""
     if households_df.empty:
         st.warning("尚未上傳住戶清單，無法產生 QR Code。")
         return None
@@ -44,10 +46,36 @@ def generate_qr_zip(households_df, base_url):
         for _, row in households_df.iterrows():
             house_id = str(row["戶號"]).strip()
             qr_link = f"{base_url}?unit={house_id}"
-            qr_img = qrcode.make(qr_link)
 
+            # 產生 QR Code
+            qr_img = qrcode.make(qr_link).convert("RGB")
+            w, h = qr_img.size
+
+            # 新增白底（上方文字，下方 QR）
+            new_h = h + 50
+            new_img = Image.new("RGB", (w, new_h), "white")
+
+            # 加上戶號文字（上方）
+            draw = ImageDraw.Draw(new_img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 28)
+            except:
+                font = ImageFont.load_default()
+
+            text_w, text_h = draw.textsize(house_id, font=font)
+            draw.text(
+                ((w - text_w) / 2, (50 - text_h) / 2),
+                house_id,
+                font=font,
+                fill="black"
+            )
+
+            # 貼上 QR Code（下方）
+            new_img.paste(qr_img, (0, 50))
+
+            # 寫入 ZIP
             img_bytes = io.BytesIO()
-            qr_img.save(img_bytes, format="PNG")
+            new_img.save(img_bytes, format="PNG")
             img_bytes.seek(0)
             zf.writestr(f"{house_id}.png", img_bytes.read())
 
@@ -67,7 +95,6 @@ def voter_page():
 
     if unit:
         st.info(f"目前登入戶號：{unit}")
-        st.success("投票功能已關閉，此版本僅供展示 QR 登入提示。")
     else:
         st.warning("未偵測到戶號參數，請由專屬 QR Code 登入。")
 
@@ -166,16 +193,13 @@ def admin_dashboard():
     # 5️⃣ 設定投票截止時間
     st.subheader("設定投票截止時間")
     now = get_taipei_time()
-    default_end = now + timedelta(days=1)
-    end_date = st.date_input("截止日期 (台北時間)", value=default_end.date())
-    end_time = st.time_input("截止時間 (台北時間)", value=default_end.time())
-
-    combined_end = datetime.combine(end_date, end_time).astimezone(timezone("Asia/Taipei"))
+    option = st.selectbox("選擇截止時間（以目前時間為基準）", [5, 10, 15, 20, 25, 30], format_func=lambda x: f"{x} 分鐘後")
+    end_time = now + timedelta(minutes=option)
 
     if st.button("儲存截止時間"):
         with open(os.path.join(DATA_DIR, "end_time.txt"), "w", encoding="utf-8") as f:
-            f.write(combined_end.strftime("%Y-%m-%d %H:%M:%S %z"))
-        st.success(f"截止時間已設定為 {combined_end.strftime('%Y-%m-%d %H:%M:%S')}")
+            f.write(end_time.strftime("%Y-%m-%d %H:%M:%S %z"))
+        st.success(f"截止時間已設定為 {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     # 6️⃣ 投票結果統計
     st.subheader("📈 投票結果統計（每 10 秒自動更新）")
