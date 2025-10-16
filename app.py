@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import time as t
 from PIL import Image, ImageDraw, ImageFont
 import streamlit.components.v1 as components
-from pytz import timezone
+from pytz import timezone, utc
 from streamlit_autorefresh import st_autorefresh
 
 # ===============================
@@ -49,7 +49,7 @@ def load_data(file_path, columns=None):
             df = df[[c for c in columns if c in df.columns]]
         return df
     else:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=columns if columns else [])
 
 
 def save_data(df, file_path):
@@ -116,7 +116,7 @@ def generate_qr_codes(base_url, households):
 
 def current_time_str_server():
     tz = timezone("Asia/Taipei")
-    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %z")
 
 # ===============================
 # 登入與權限
@@ -143,13 +143,13 @@ def show_admin_login():
             st.error("帳號或密碼錯誤，請重新輸入。")
 
 # ===============================
-# 管理後台
+# 管理後台（已按指定順序重排）
 # ===============================
 
 def admin_dashboard():
     st.title("📋 管理後台")
 
-    # 投票開關
+    # 1. 投票控制
     st.subheader("🔁 投票控制")
     status = read_voting_status()
     st.write(f"目前投票狀態：**{'開啟' if status.get('open') else '關閉'}**")
@@ -163,9 +163,9 @@ def admin_dashboard():
             write_voting_status(False)
             st.success("投票已停止")
 
-    # 上傳住戶清單
+    # 2. 上傳住戶清單
     st.subheader("🏘️ 上傳住戶清單 (戶號 + 區分比例)")
-    household_file = st.file_uploader("請選擇 households.csv", type=["csv"]) 
+    household_file = st.file_uploader("請選擇 households.csv", type=["csv"], key="house_upload")
     if household_file:
         df_house = pd.read_csv(household_file)
         if "戶號" in df_house.columns and "區分比例" in df_house.columns:
@@ -174,9 +174,9 @@ def admin_dashboard():
         else:
             st.error("CSV 必須包含欄位：戶號、區分比例")
 
-    # 上傳議題清單
+    # 3. 上傳議題清單
     st.subheader("🗳️ 上傳議題清單 (欄位：議題)")
-    topic_file = st.file_uploader("請選擇 topics.csv", type=["csv"]) 
+    topic_file = st.file_uploader("請選擇 topics.csv", type=["csv"], key="topic_upload")
     if topic_file:
         df_topic = pd.read_csv(topic_file)
         if "議題" in df_topic.columns:
@@ -185,58 +185,60 @@ def admin_dashboard():
         else:
             st.error("CSV 必須包含欄位：議題")
 
-    # 設定截止時間
+    # 4. 住戶 QR Code 投票連結（僅在管理後台顯示）
+    st.subheader("🏘️ 住戶 QR Code 投票連結")
+    st.caption("請於議題討論後掃描 QR Code 進行投票。")
+
+    df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"]) if os.path.exists(HOUSEHOLD_FILE) else pd.DataFrame()
+    if df_house.empty:
+        st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
+    else:
+        base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
+        st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A1-3F")
+
+        # 把住戶清單暫存起來，避免重新執行時丟失
+        st.session_state["households"] = df_house
+
+        if st.button("📦 產生 QR Code ZIP"):
+            try:
+                qr_zip = generate_qr_codes(base_url, st.session_state["households"])
+                st.session_state["qr_zip_data"] = qr_zip.getvalue()
+                st.success("✅ QR Code 已產生，請按下方下載。")
+
+            except Exception as e:
+                st.error(f"產生 QR Code 時發生錯誤：{e}")
+
+        # 若已有暫存檔，可顯示下載鈕
+        if "qr_zip_data" in st.session_state and st.session_state["qr_zip_data"]:
+            st.download_button(
+                label="📥 下載 QR Code 壓縮包",
+                data=st.session_state["qr_zip_data"],
+                file_name="QRcodes.zip",
+                mime="application/zip"
+            )
+
+    # 5. 設定截止時間（修正時區處理，儲存含時區資訊）
     st.subheader("📅 設定投票截止時間（以現在起算）")
     minutes_option = st.selectbox("選擇距今的截止時間（分鐘）", [5,10,15,20,25,30], index=2)
     if st.button("💾 設定截止時間（從現在起）"):
-        cutoff_dt = datetime.now(timezone("Asia/Taipei")) + timedelta(minutes=int(minutes_option))
-        cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+        tz = timezone("Asia/Taipei")
+        cutoff_dt = datetime.now(tz) + timedelta(minutes=int(minutes_option))
+        # 儲存含時區的時間字串（包含 +0800）
+        cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S %z")
         with open(CUTOFF_FILE, "w") as f:
             f.write(cutoff_str)
         st.success(f"截止時間已設定為：{cutoff_str}")
 
-    # 產生 QR Code
-st.subheader("🏘️ 住戶 QR Code 投票連結")
-st.caption("請於議題討論後掃描 QR Code 進行投票。")
-
-df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
-if len(df_house) == 0:
-    st.warning("尚未上傳住戶清單，請先上傳包含「戶號」與「區分比例」的 CSV 檔。")
-else:
-    base_url = st.text_input("投票網站基本網址（請包含 https://）", "https://smartvoteapp.onrender.com")
-    st.info("網址會自動加上戶號參數，例如：https://smartvoteapp.onrender.com?unit=A1-3F")
-
-    # 把住戶清單暫存起來，避免重新執行時丟失
-    st.session_state["households"] = df_house
-
-    if st.button("📦 產生 QR Code ZIP"):
-        try:
-            qr_zip = generate_qr_codes(base_url, st.session_state["households"])
-            st.session_state["qr_zip_data"] = qr_zip.getvalue()
-            st.success("✅ QR Code 已產生，請按下方下載。")
-
-        except Exception as e:
-            st.error(f"產生 QR Code 時發生錯誤：{e}")
-
-    # 若已有暫存檔，可顯示下載鈕
-    if "qr_zip_data" in st.session_state and st.session_state["qr_zip_data"]:
-        st.download_button(
-            label="📥 下載 QR Code 壓縮包",
-            data=st.session_state["qr_zip_data"],
-            file_name="QRcodes.zip",
-            mime="application/zip"
-        )
-
-    # 顯示投票統計
+    # 6. 投票結果統計（自動刷新）
     st.subheader("📈 投票結果統計")
     count = st_autorefresh(interval=10 * 1000, key="datarefresh")
 
     if os.path.exists(VOTE_FILE):
         df_vote = pd.read_csv(VOTE_FILE)
-        df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
-        df_topic = load_data(TOPIC_FILE, ["議題"])
+        df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"]) if os.path.exists(HOUSEHOLD_FILE) else pd.DataFrame()
+        df_topic = load_data(TOPIC_FILE, ["議題"]) if os.path.exists(TOPIC_FILE) else pd.DataFrame()
 
-        if len(df_vote) > 0 and len(df_topic) > 0:
+        if len(df_vote) > 0 and len(df_topic) > 0 and not df_house.empty:
             merged = df_vote.merge(df_house, on="戶號", how="left")
             result_list = []
             for topic in df_topic["議題"]:
@@ -246,8 +248,8 @@ else:
                 disagree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意")].shape[0]
                 result_list.append({
                     "議題": topic,
-                    "同意比例": round(agree_sum, 4),
-                    "不同意比例": round(disagree_sum, 4),
+                    "同意比例": round(float(agree_sum), 4),
+                    "不同意比例": round(float(disagree_sum), 4),
                     "同意人數": int(agree_count),
                     "不同意人數": int(disagree_count)
                 })
@@ -255,7 +257,7 @@ else:
             st.dataframe(df_result)
             st.caption(f"統計時間（伺服器）：{current_time_str_server()}")
         else:
-            st.info("尚無投票紀錄或議題資料。")
+            st.info("尚無投票紀錄或議題／住戶資料不足。")
     else:
         st.info("尚未有投票資料。")
 
@@ -264,12 +266,9 @@ else:
 # ===============================
 
 def voter_page():
-    # 嘗試取得戶號
-    try:
-        unit = st.query_params.get("unit")
-    except Exception:
-        qp = st.experimental_get_query_params()
-        unit = qp.get("unit", [None])[0] if "unit" in qp else None
+    # 取得戶號 (使用可靠方法)
+    qp = st.experimental_get_query_params()
+    unit = qp.get("unit", [None])[0]
 
     if not unit:
         st.error("❌ 無法辨識戶號，請使用正確的 QR Code 連結進入。")
@@ -300,8 +299,11 @@ def voter_page():
         with open(CUTOFF_FILE, "r") as f:
             cutoff_str = f.read().strip()
         try:
-            cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
-            if datetime.now(timezone("Asia/Taipei")) > cutoff_time:
+            # 解析含時區的時間字串
+            cutoff_time = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S %z")
+            now = datetime.now(timezone("Asia/Taipei"))
+            # 轉成同樣時區-aware 的 datetime 再比較
+            if now > cutoff_time:
                 st.warning(f"📢 投票已截止（截止時間：{cutoff_str}）")
                 show_final_results()
                 return
@@ -309,7 +311,7 @@ def voter_page():
             st.error("截止時間格式錯誤，請聯絡管理員。")
             return
 
-    df_topic = load_data(TOPIC_FILE, ["議題"])
+    df_topic = load_data(TOPIC_FILE, ["議題"]) if os.path.exists(TOPIC_FILE) else pd.DataFrame()
     if len(df_topic) == 0:
         st.info("尚未設定投票議題。")
         return
@@ -329,11 +331,13 @@ def voter_page():
                 choices[topic] = st.radio(f"{topic}", ["同意", "不同意"], key=f"vote_{topic}")
         submit = st.form_submit_button("一次送出所有投票")
         if submit:
+            # 重新載入／建立 df_vote
+            df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"]) if os.path.exists(VOTE_FILE) else pd.DataFrame(columns=["戶號", "議題", "投票"])
             for topic, choice in choices.items():
                 df_vote.loc[len(df_vote)] = [unit, topic, choice]
             save_data(df_vote, VOTE_FILE)
             st.success("✅ 已成功送出所有投票。感謝您的參與！")
-            st.rerun()
+            st.experimental_rerun()
 
 # ===============================
 # 公告顯示
@@ -343,11 +347,15 @@ def show_final_results():
     st.header("📢 投票結果公告")
 
     df_vote = load_data(VOTE_FILE, ["戶號", "議題", "投票"]) if os.path.exists(VOTE_FILE) else pd.DataFrame()
-    df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"])
-    df_topic = load_data(TOPIC_FILE, ["議題"])
+    df_house = load_data(HOUSEHOLD_FILE, ["戶號", "區分比例"]) if os.path.exists(HOUSEHOLD_FILE) else pd.DataFrame()
+    df_topic = load_data(TOPIC_FILE, ["議題"]) if os.path.exists(TOPIC_FILE) else pd.DataFrame()
 
     if len(df_vote) == 0 or len(df_topic) == 0:
         st.info("尚無可公告的投票結果。")
+        return
+
+    if df_house.empty:
+        st.error("缺少住戶資料，無法計算權重結果。請聯絡管理員。")
         return
 
     merged = df_vote.merge(df_house, on="戶號", how="left")
@@ -359,8 +367,8 @@ def show_final_results():
         disagree_count = merged.loc[(merged["議題"] == topic) & (merged["投票"] == "不同意")].shape[0]
         result_list.append({
             "議題": topic,
-            "同意比例": round(agree_sum, 4),
-            "不同意比例": round(disagree_sum, 4),
+            "同意比例": round(float(agree_sum), 4),
+            "不同意比例": round(float(disagree_sum), 4),
             "同意人數": int(agree_count),
             "不同意人數": int(disagree_count)
         })
